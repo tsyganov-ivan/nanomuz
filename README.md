@@ -1,0 +1,131 @@
+# Nanomuz
+
+A tiny floating music widget for macOS that displays and controls Apple Music playback.
+
+![Nanomuz Widget](screenshot_1.png)
+
+![Nanomuz Settings](screenshot_2.png)
+
+## Features
+
+- Floating widget that stays on top of all windows
+- Display current track info (title, artist, artwork)
+- Playback controls (play/pause, next, previous)
+- Add/remove tracks from favorites
+- Scrolling marquee for long titles
+- Customizable background color and opacity
+- Launch on login option
+- Horizontal resizing
+- Works on all Spaces
+
+## Requirements
+
+- macOS 12.0 (Monterey) or later
+- Apple Music app
+
+## Installation
+
+### Download
+
+Download the latest DMG from [Releases](../../releases).
+
+### Homebrew (coming soon)
+
+```bash
+brew install --cask nanomuz
+```
+
+### Build from source
+
+```bash
+git clone https://github.com/yourusername/nanomuz.git
+cd nanomuz
+make install
+```
+
+## Usage
+
+1. Open Nanomuz — a floating widget will appear
+2. Play music in Apple Music
+3. Use the widget to control playback
+
+### Controls
+
+| Button | Action |
+|--------|--------|
+| ⏮ | Previous track |
+| ▶/⏸ | Play/Pause |
+| ⏭ | Next track |
+| ♡/♥ | Toggle favorite |
+| ⚙ | Open settings |
+| ✕ | Quit |
+
+### Settings
+
+Click the ⚙ button to expand settings panel:
+- **Opacity slider** — adjust background transparency
+- **Color picker** — change background color
+- **Launch on Login** — start automatically on login
+- **Dock** — show/hide app icon in Dock
+- **Menu Bar** — show/hide icon in menu bar
+
+### Window
+
+- **Drag** anywhere to move
+- **Resize** horizontally by dragging edges
+
+## Configuration
+
+Settings are stored in:
+```
+~/Library/Application Support/Nanomuz/config.json
+```
+
+## Building
+
+```bash
+make          # Build app bundle
+make dmg      # Create DMG for distribution
+make run      # Build and run
+make clean    # Clean build artifacts
+make icon     # Regenerate app icon
+```
+
+## Known Limitations
+
+### Gatekeeper Warning
+
+Since the app is not code-signed or notarized, macOS will show a warning when you first open it.
+
+**To open anyway:**
+1. Right-click on `Nanomuz.app`
+2. Select "Open"
+3. Click "Open" in the dialog
+
+Or via Terminal:
+```bash
+xattr -d com.apple.quarantine /Applications/Nanomuz.app
+```
+
+### Code Signing
+
+For distribution without Gatekeeper warnings, the app needs to be:
+1. Signed with an Apple Developer certificate
+2. Notarized through Apple's notary service
+
+This requires an [Apple Developer Program](https://developer.apple.com/programs/) membership ($99/year).
+
+## Tech Stack
+
+- Swift 5.9
+- AppKit
+- MediaRemote.framework (private API via JXA)
+- AppleScript for Music.app control
+
+## License
+
+[MIT](LICENSE)
+
+## Contributing
+
+Pull requests are welcome! Please open an issue first to discuss what you would like to change.
