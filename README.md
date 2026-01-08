@@ -29,16 +29,17 @@ A tiny floating music widget for macOS that displays and controls Apple Music pl
 
 Download the latest DMG from [Releases](../../releases).
 
-### Homebrew (coming soon)
+### Homebrew
 
 ```bash
+brew tap tsyganov-ivan/nanomuz https://github.com/tsyganov-ivan/nanomuz
 brew install --cask nanomuz
 ```
 
 ### Build from source
 
 ```bash
-git clone https://github.com/yourusername/nanomuz.git
+git clone https://github.com/tsyganov-ivan/nanomuz.git
 cd nanomuz
 make install
 ```

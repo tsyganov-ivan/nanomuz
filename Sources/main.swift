@@ -432,9 +432,13 @@ class PlayerView: NSView {
     private var colorWell: NSColorWell?
     private var opacityLabel: NSTextField?
     private var launchOnLoginCheckbox: NSButton?
+    private var launchOnLoginLabel: NSTextField?
     private var showInDockCheckbox: NSButton?
+    private var showInDockLabel: NSTextField?
     private var showInMenuBarCheckbox: NSButton?
+    private var showInMenuBarLabel: NSTextField?
     private var alwaysOnTopCheckbox: NSButton?
+    private var alwaysOnTopLabel: NSTextField?
 
     // Marquee animation
     private var scrollOffset: CGFloat = 0
@@ -463,41 +467,52 @@ class PlayerView: NSView {
         opacityLabel?.textColor = colors.textSecondary
         addSubview(opacityLabel!)
 
-        launchOnLoginCheckbox = NSButton(checkboxWithTitle: "Launch on Login", target: self, action: #selector(launchOnLoginChanged))
-        launchOnLoginCheckbox?.font = NSFont.systemFont(ofSize: 11)
+        launchOnLoginCheckbox = NSButton(checkboxWithTitle: "", target: self, action: #selector(launchOnLoginChanged))
         launchOnLoginCheckbox?.state = launchOnLogin ? .on : .off
-        launchOnLoginCheckbox?.contentTintColor = colors.text
         addSubview(launchOnLoginCheckbox!)
+        launchOnLoginLabel = NSTextField(labelWithString: "Launch on Login")
+        launchOnLoginLabel?.font = NSFont.systemFont(ofSize: 11)
+        addSubview(launchOnLoginLabel!)
 
-        showInDockCheckbox = NSButton(checkboxWithTitle: "Dock", target: self, action: #selector(showInDockChanged))
-        showInDockCheckbox?.font = NSFont.systemFont(ofSize: 11)
+        showInDockCheckbox = NSButton(checkboxWithTitle: "", target: self, action: #selector(showInDockChanged))
         showInDockCheckbox?.state = showInDock ? .on : .off
-        showInDockCheckbox?.contentTintColor = colors.text
         addSubview(showInDockCheckbox!)
+        showInDockLabel = NSTextField(labelWithString: "Dock")
+        showInDockLabel?.font = NSFont.systemFont(ofSize: 11)
+        addSubview(showInDockLabel!)
 
-        showInMenuBarCheckbox = NSButton(checkboxWithTitle: "Menu Bar", target: self, action: #selector(showInMenuBarChanged))
-        showInMenuBarCheckbox?.font = NSFont.systemFont(ofSize: 11)
+        showInMenuBarCheckbox = NSButton(checkboxWithTitle: "", target: self, action: #selector(showInMenuBarChanged))
         showInMenuBarCheckbox?.state = showInMenuBar ? .on : .off
-        showInMenuBarCheckbox?.contentTintColor = colors.text
         addSubview(showInMenuBarCheckbox!)
+        showInMenuBarLabel = NSTextField(labelWithString: "Menu Bar")
+        showInMenuBarLabel?.font = NSFont.systemFont(ofSize: 11)
+        addSubview(showInMenuBarLabel!)
 
-        alwaysOnTopCheckbox = NSButton(checkboxWithTitle: "Always on Top", target: self, action: #selector(alwaysOnTopChanged))
-        alwaysOnTopCheckbox?.font = NSFont.systemFont(ofSize: 11)
+        alwaysOnTopCheckbox = NSButton(checkboxWithTitle: "", target: self, action: #selector(alwaysOnTopChanged))
         alwaysOnTopCheckbox?.state = alwaysOnTop ? .on : .off
-        alwaysOnTopCheckbox?.contentTintColor = colors.text
         addSubview(alwaysOnTopCheckbox!)
+        alwaysOnTopLabel = NSTextField(labelWithString: "Always on Top")
+        alwaysOnTopLabel?.font = NSFont.systemFont(ofSize: 11)
+        addSubview(alwaysOnTopLabel!)
+
+        updateSettingsColors()
 
         updateSettingsControlsVisibility()
     }
 
     func updateSettingsControlsVisibility() {
-        opacitySlider?.isHidden = !isSettingsExpanded
-        colorWell?.isHidden = !isSettingsExpanded
-        opacityLabel?.isHidden = !isSettingsExpanded
-        launchOnLoginCheckbox?.isHidden = !isSettingsExpanded
-        showInDockCheckbox?.isHidden = !isSettingsExpanded
-        showInMenuBarCheckbox?.isHidden = !isSettingsExpanded
-        alwaysOnTopCheckbox?.isHidden = !isSettingsExpanded
+        let hidden = !isSettingsExpanded
+        opacitySlider?.isHidden = hidden
+        colorWell?.isHidden = hidden
+        opacityLabel?.isHidden = hidden
+        launchOnLoginCheckbox?.isHidden = hidden
+        launchOnLoginLabel?.isHidden = hidden
+        showInDockCheckbox?.isHidden = hidden
+        showInDockLabel?.isHidden = hidden
+        showInMenuBarCheckbox?.isHidden = hidden
+        showInMenuBarLabel?.isHidden = hidden
+        alwaysOnTopCheckbox?.isHidden = hidden
+        alwaysOnTopLabel?.isHidden = hidden
     }
 
     func updateSettingsControlsLayout() {
@@ -508,15 +523,23 @@ class PlayerView: NSView {
         opacityLabel?.frame = NSRect(x: 12, y: row1Y, width: 50, height: 20)
         opacitySlider?.frame = NSRect(x: 62, y: row1Y, width: 100, height: 20)
         colorWell?.frame = NSRect(x: 170, y: row1Y - 2, width: 44, height: 24)
-        launchOnLoginCheckbox?.frame = NSRect(x: 224, y: row1Y, width: 120, height: 20)
+        launchOnLoginCheckbox?.frame = NSRect(x: 224, y: row1Y, width: 18, height: 20)
+        launchOnLoginLabel?.frame = NSRect(x: 242, y: row1Y, width: 100, height: 20)
 
-        showInDockCheckbox?.frame = NSRect(x: 12, y: row2Y, width: 55, height: 20)
-        showInMenuBarCheckbox?.frame = NSRect(x: 72, y: row2Y, width: 85, height: 20)
-        alwaysOnTopCheckbox?.frame = NSRect(x: 162, y: row2Y, width: 110, height: 20)
+        showInDockCheckbox?.frame = NSRect(x: 12, y: row2Y, width: 18, height: 20)
+        showInDockLabel?.frame = NSRect(x: 30, y: row2Y, width: 40, height: 20)
+        showInMenuBarCheckbox?.frame = NSRect(x: 75, y: row2Y, width: 18, height: 20)
+        showInMenuBarLabel?.frame = NSRect(x: 93, y: row2Y, width: 65, height: 20)
+        alwaysOnTopCheckbox?.frame = NSRect(x: 163, y: row2Y, width: 18, height: 20)
+        alwaysOnTopLabel?.frame = NSRect(x: 181, y: row2Y, width: 90, height: 20)
     }
 
     func updateSettingsColors() {
         opacityLabel?.textColor = colors.textSecondary
+        launchOnLoginLabel?.textColor = colors.text
+        showInDockLabel?.textColor = colors.text
+        showInMenuBarLabel?.textColor = colors.text
+        alwaysOnTopLabel?.textColor = colors.text
         launchOnLoginCheckbox?.contentTintColor = colors.text
         showInDockCheckbox?.contentTintColor = colors.text
         showInMenuBarCheckbox?.contentTintColor = colors.text
@@ -915,6 +938,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Reset Settings", action: #selector(resetSettings), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "About Nanomuz", action: #selector(showAbout), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q"))
         statusItem?.menu = menu
     }
@@ -942,6 +966,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc func showLogFile() {
         NSWorkspace.shared.selectFile(Logger.logFileURL.path, inFileViewerRootedAtPath: "")
+    }
+
+    @objc func showAbout() {
+        let alert = NSAlert()
+        alert.messageText = "Nanomuz"
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
+        alert.informativeText = "Version \(version)\n\nA tiny floating music widget for macOS"
+        alert.alertStyle = .informational
+        alert.icon = NSApp.applicationIconImage
+
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "GitHub")
+
+        let response = alert.runModal()
+        if response == .alertSecondButtonReturn {
+            if let url = URL(string: "https://github.com/tsyganov-ivan/nanomuz") {
+                NSWorkspace.shared.open(url)
+            }
+        }
     }
 
     @objc func resetSettings() {

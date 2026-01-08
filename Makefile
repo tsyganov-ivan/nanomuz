@@ -1,7 +1,7 @@
 .PHONY: all build bundle icon dmg clean install uninstall run
 
 APP_NAME = Nanomuz
-VERSION = 1.0.0
+VERSION := $(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo "1.0.0")
 BUILD_DIR = .build/release
 BUNDLE = $(APP_NAME).app
 DMG = $(APP_NAME)-$(VERSION).dmg
@@ -14,9 +14,9 @@ build:
 bundle: build
 	@mkdir -p $(BUNDLE)/Contents/{MacOS,Resources}
 	@cp $(BUILD_DIR)/$(APP_NAME) $(BUNDLE)/Contents/MacOS/
-	@cp Info.plist $(BUNDLE)/Contents/
+	@sed 's/1\.0\.0/$(VERSION)/g' Info.plist > $(BUNDLE)/Contents/Info.plist
 	@cp Resources/AppIcon.icns $(BUNDLE)/Contents/Resources/
-	@echo "Created $(BUNDLE)"
+	@echo "Created $(BUNDLE) (v$(VERSION))"
 
 dmg: bundle
 	@rm -f $(DMG)

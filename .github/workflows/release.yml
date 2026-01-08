@@ -11,20 +11,36 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-15
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
 
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+      - name: Get version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+          else
+            VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo "dev")
+            echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          fi
 
       - name: Build
-        run: make bundle
+        run: make bundle VERSION=${{ steps.version.outputs.VERSION }}
 
       - name: Create DMG
-        run: make dmg
+        run: make dmg VERSION=${{ steps.version.outputs.VERSION }}
+
+      - name: Calculate SHA256
+        id: sha256
+        run: |
+          SHA=$(shasum -a 256 Nanomuz-*.dmg | awk '{print $1}')
+          echo "SHA256=$SHA" >> $GITHUB_OUTPUT
 
       - name: Upload DMG
         uses: actions/upload-artifact@v4
@@ -46,3 +62,15 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Cask formula
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          git checkout main
+          sed -i '' 's/version ".*"/version "${{ steps.version.outputs.VERSION }}"/' Casks/nanomuz.rb
+          sed -i '' 's/sha256 ".*"/sha256 "${{ steps.sha256.outputs.SHA256 }}"/' Casks/nanomuz.rb
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/nanomuz.rb
+          git commit -m "Update Cask to v${{ steps.version.outputs.VERSION }}"
+          git push origin main
