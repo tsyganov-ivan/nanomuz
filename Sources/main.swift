@@ -156,16 +156,18 @@ struct Config: Codable {
     var launchOnLogin: Bool
     var showInDock: Bool
     var showInMenuBar: Bool
+    var alwaysOnTop: Bool
 
     static let defaultConfig = Config(
         windowX: 100,
         windowY: 100,
         windowWidth: 400,
-        backgroundColor: "1E1E1E",
-        backgroundOpacity: 0.95,
+        backgroundColor: "657A91",
+        backgroundOpacity: 0.47,
         launchOnLogin: false,
         showInDock: false,
-        showInMenuBar: true
+        showInMenuBar: true,
+        alwaysOnTop: true
     )
     static let minWidth: CGFloat = 300
     static let maxWidth: CGFloat = 800
@@ -310,6 +312,7 @@ class PlayerView: NSView {
     var onLaunchOnLoginChange: ((Bool) -> Void)?
     var onShowInDockChange: ((Bool) -> Void)?
     var onShowInMenuBarChange: ((Bool) -> Void)?
+    var onAlwaysOnTopChange: ((Bool) -> Void)?
 
     private var trackingArea: NSTrackingArea?
     private var hoveredButton: String?
@@ -320,6 +323,7 @@ class PlayerView: NSView {
     private var launchOnLoginCheckbox: NSButton?
     private var showInDockCheckbox: NSButton?
     private var showInMenuBarCheckbox: NSButton?
+    private var alwaysOnTopCheckbox: NSButton?
 
     // Marquee animation
     private var scrollOffset: CGFloat = 0
@@ -332,7 +336,7 @@ class PlayerView: NSView {
 
     override var isFlipped: Bool { true }
 
-    func setupSettingsControls(opacity: CGFloat, color: NSColor, launchOnLogin: Bool, showInDock: Bool, showInMenuBar: Bool) {
+    func setupSettingsControls(opacity: CGFloat, color: NSColor, launchOnLogin: Bool, showInDock: Bool, showInMenuBar: Bool, alwaysOnTop: Bool) {
         opacitySlider = NSSlider(value: Double(opacity), minValue: 0.3, maxValue: 1.0, target: self, action: #selector(opacityChanged))
         opacitySlider?.isContinuous = true
         addSubview(opacitySlider!)
@@ -366,6 +370,12 @@ class PlayerView: NSView {
         showInMenuBarCheckbox?.contentTintColor = colors.text
         addSubview(showInMenuBarCheckbox!)
 
+        alwaysOnTopCheckbox = NSButton(checkboxWithTitle: "Always on Top", target: self, action: #selector(alwaysOnTopChanged))
+        alwaysOnTopCheckbox?.font = NSFont.systemFont(ofSize: 11)
+        alwaysOnTopCheckbox?.state = alwaysOnTop ? .on : .off
+        alwaysOnTopCheckbox?.contentTintColor = colors.text
+        addSubview(alwaysOnTopCheckbox!)
+
         updateSettingsControlsVisibility()
     }
 
@@ -376,6 +386,7 @@ class PlayerView: NSView {
         launchOnLoginCheckbox?.isHidden = !isSettingsExpanded
         showInDockCheckbox?.isHidden = !isSettingsExpanded
         showInMenuBarCheckbox?.isHidden = !isSettingsExpanded
+        alwaysOnTopCheckbox?.isHidden = !isSettingsExpanded
     }
 
     func updateSettingsControlsLayout() {
@@ -388,8 +399,9 @@ class PlayerView: NSView {
         colorWell?.frame = NSRect(x: 170, y: row1Y - 2, width: 44, height: 24)
         launchOnLoginCheckbox?.frame = NSRect(x: 224, y: row1Y, width: 120, height: 20)
 
-        showInDockCheckbox?.frame = NSRect(x: 12, y: row2Y, width: 60, height: 20)
-        showInMenuBarCheckbox?.frame = NSRect(x: 80, y: row2Y, width: 90, height: 20)
+        showInDockCheckbox?.frame = NSRect(x: 12, y: row2Y, width: 55, height: 20)
+        showInMenuBarCheckbox?.frame = NSRect(x: 72, y: row2Y, width: 85, height: 20)
+        alwaysOnTopCheckbox?.frame = NSRect(x: 162, y: row2Y, width: 110, height: 20)
     }
 
     func updateSettingsColors() {
@@ -397,6 +409,7 @@ class PlayerView: NSView {
         launchOnLoginCheckbox?.contentTintColor = colors.text
         showInDockCheckbox?.contentTintColor = colors.text
         showInMenuBarCheckbox?.contentTintColor = colors.text
+        alwaysOnTopCheckbox?.contentTintColor = colors.text
     }
 
     @objc private func opacityChanged() {
@@ -419,6 +432,10 @@ class PlayerView: NSView {
 
     @objc private func showInMenuBarChanged() {
         onShowInMenuBarChange?(showInMenuBarCheckbox?.state == .on)
+    }
+
+    @objc private func alwaysOnTopChanged() {
+        onAlwaysOnTopChange?(alwaysOnTopCheckbox?.state == .on)
     }
 
     override func updateTrackingAreas() {
@@ -714,7 +731,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         window.isOpaque = false
         window.backgroundColor = .clear
-        window.level = .floating
+        window.level = config.alwaysOnTop ? .floating : .normal
         window.collectionBehavior = [.canJoinAllSpaces, .stationary]
         window.isMovableByWindowBackground = true
         window.hasShadow = true
@@ -739,12 +756,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         playerView.onLaunchOnLoginChange = { [weak self] enabled in self?.updateLaunchOnLogin(enabled) }
         playerView.onShowInDockChange = { [weak self] enabled in self?.updateShowInDock(enabled) }
         playerView.onShowInMenuBarChange = { [weak self] enabled in self?.updateShowInMenuBar(enabled) }
+        playerView.onAlwaysOnTopChange = { [weak self] enabled in self?.updateAlwaysOnTop(enabled) }
         playerView.setupSettingsControls(
             opacity: config.backgroundOpacity,
             color: NSColor(hex: config.backgroundColor),
             launchOnLogin: config.launchOnLogin,
             showInDock: config.showInDock,
-            showInMenuBar: config.showInMenuBar
+            showInMenuBar: config.showInMenuBar,
+            alwaysOnTop: config.alwaysOnTop
         )
 
         window.contentView = playerView
@@ -773,10 +792,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         let menu = NSMenu()
+        let alwaysOnTopItem = NSMenuItem(title: "Always on Top", action: #selector(toggleAlwaysOnTop), keyEquivalent: "")
+        alwaysOnTopItem.state = config.alwaysOnTop ? .on : .off
+        menu.addItem(alwaysOnTopItem)
+        menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Reset Settings", action: #selector(resetSettings), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q"))
         statusItem?.menu = menu
+    }
+
+    @objc func toggleAlwaysOnTop() {
+        updateAlwaysOnTop(!config.alwaysOnTop)
     }
 
     @objc func resetSettings() {
@@ -785,6 +812,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         updateDockVisibility(config.showInDock)
         updateShowInMenuBar(config.showInMenuBar)
+        updateAlwaysOnTop(config.alwaysOnTop)
         if config.launchOnLogin {
             LaunchAgent.install()
         } else {
@@ -830,6 +858,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 NSStatusBar.system.removeStatusItem(item)
                 statusItem = nil
             }
+        }
+    }
+
+    func updateAlwaysOnTop(_ enabled: Bool) {
+        config.alwaysOnTop = enabled
+        config.save()
+        window.level = enabled ? .floating : .normal
+        if let menu = statusItem?.menu,
+           let item = menu.item(withTitle: "Always on Top") {
+            item.state = enabled ? .on : .off
         }
     }
 

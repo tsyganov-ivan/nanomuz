@@ -68,6 +68,7 @@ Click the ⚙ button to expand settings panel:
 - **Launch on Login** — start automatically on login
 - **Dock** — show/hide app icon in Dock
 - **Menu Bar** — show/hide icon in menu bar
+- **Always on Top** — keep widget above other windows
 
 ### Window
 
