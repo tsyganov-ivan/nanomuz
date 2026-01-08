@@ -1,6 +1,76 @@
 import AppKit
 import Foundation
 
+// MARK: - Logger
+
+class Logger {
+    static let shared = Logger()
+    var enabled = false
+
+    private var lastMessages: [String: Date] = [:]
+    private let dedupeInterval: TimeInterval = 5.0
+    private let maxEntries = 100
+    private var fileHandle: FileHandle?
+
+    static var logFileURL: URL {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let dir = appSupport.appendingPathComponent("Nanomuz")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("nanomuz.log")
+    }
+
+    private init() {}
+
+    func log(_ message: String, key: String? = nil) {
+        guard enabled else { return }
+
+        let dedupeKey = key ?? message
+        let now = Date()
+
+        if let lastTime = lastMessages[dedupeKey],
+           now.timeIntervalSince(lastTime) < dedupeInterval {
+            return
+        }
+
+        lastMessages[dedupeKey] = now
+        cleanupIfNeeded()
+
+        write(message)
+    }
+
+    func logAlways(_ message: String) {
+        guard enabled else { return }
+        write(message)
+    }
+
+    private func write(_ message: String) {
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let line = "[\(timestamp)] \(message)\n"
+
+        if fileHandle == nil {
+            FileManager.default.createFile(atPath: Self.logFileURL.path, contents: nil)
+            fileHandle = try? FileHandle(forWritingTo: Self.logFileURL)
+            fileHandle?.seekToEndOfFile()
+        }
+
+        if let data = line.data(using: .utf8) {
+            fileHandle?.write(data)
+        }
+    }
+
+    private func cleanupIfNeeded() {
+        guard lastMessages.count > maxEntries else { return }
+        let cutoff = Date().addingTimeInterval(-dedupeInterval * 2)
+        lastMessages = lastMessages.filter { $0.value > cutoff }
+    }
+
+    func deleteLogFile() {
+        fileHandle?.closeFile()
+        fileHandle = nil
+        try? FileManager.default.removeItem(at: Self.logFileURL)
+    }
+}
+
 // MARK: - Media Controller
 
 struct NowPlayingInfo {
@@ -46,37 +116,76 @@ class MediaController {
     """
 
     func fetchFromMediaRemote() {
-        // Get track info via JXA (fast, synchronous)
-        if let jsonStr = runJXA(jxaScript),
-           !jsonStr.isEmpty,
-           jsonStr != "null",
-           let data = jsonStr.data(using: .utf8),
-           let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let title = dict["title"] as? String {
+        let jsonStr = runJXA(jxaScript)
 
-            cachedInfo = NowPlayingInfo(
-                title: title,
-                artist: dict["artist"] as? String ?? "",
-                album: dict["album"] as? String ?? "",
-                isPlaying: (dict["playbackRate"] as? Double ?? 0) > 0,
-                artworkUrl: dict["artworkId"] as? String,
-                isFavorited: isFavorited()
-            )
-        } else {
+        guard let jsonStr = jsonStr,
+              !jsonStr.isEmpty,
+              jsonStr != "null" else {
+            Logger.shared.log("MediaRemote: No data from JXA", key: "no_jxa_data")
             cachedInfo = nil
-            cachedArtwork = nil
-        }
-    }
-
-    func fetchArtwork() {
-        guard let info = cachedInfo,
-              let urlString = info.artworkUrl,
-              let url = URL(string: urlString) else {
             cachedArtwork = nil
             return
         }
 
-        cachedArtwork = try? Data(contentsOf: url)
+        guard let data = jsonStr.data(using: .utf8),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let title = dict["title"] as? String else {
+            Logger.shared.log("MediaRemote: Failed to parse JSON: \(jsonStr.prefix(100))", key: "json_parse_error")
+            cachedInfo = nil
+            cachedArtwork = nil
+            return
+        }
+
+        let oldTitle = cachedInfo?.title
+        let artist = dict["artist"] as? String ?? ""
+        let artworkUrl = dict["artworkId"] as? String
+
+        cachedInfo = NowPlayingInfo(
+            title: title,
+            artist: artist,
+            album: dict["album"] as? String ?? "",
+            isPlaying: (dict["playbackRate"] as? Double ?? 0) > 0,
+            artworkUrl: artworkUrl,
+            isFavorited: isFavorited()
+        )
+
+        if oldTitle != title {
+            Logger.shared.logAlways("Track changed: \(artist) - \(title)")
+            if let url = artworkUrl {
+                Logger.shared.logAlways("Artwork URL: \(url)")
+            } else {
+                Logger.shared.logAlways("Artwork URL: nil")
+            }
+        }
+    }
+
+    func fetchArtwork() {
+        guard let info = cachedInfo else {
+            Logger.shared.log("fetchArtwork: No track info", key: "no_track_info")
+            cachedArtwork = nil
+            return
+        }
+
+        guard let urlString = info.artworkUrl else {
+            Logger.shared.log("fetchArtwork: No artwork URL for '\(info.title)'", key: "no_artwork_url_\(info.title)")
+            cachedArtwork = nil
+            return
+        }
+
+        guard let url = URL(string: urlString) else {
+            Logger.shared.logAlways("fetchArtwork: Invalid URL: \(urlString)")
+            cachedArtwork = nil
+            return
+        }
+
+        do {
+            let data = try Data(contentsOf: url)
+            cachedArtwork = data
+            Logger.shared.log("fetchArtwork: Loaded \(data.count) bytes for '\(info.title)'", key: "artwork_loaded_\(info.title)")
+        } catch {
+            Logger.shared.logAlways("fetchArtwork: Failed to load from \(urlString): \(error.localizedDescription)")
+            cachedArtwork = nil
+        }
     }
 
     func playPause() {
@@ -157,6 +266,7 @@ struct Config: Codable {
     var showInDock: Bool
     var showInMenuBar: Bool
     var alwaysOnTop: Bool
+    var loggingEnabled: Bool
 
     static let defaultConfig = Config(
         windowX: 100,
@@ -167,7 +277,8 @@ struct Config: Codable {
         launchOnLogin: false,
         showInDock: false,
         showInMenuBar: true,
-        alwaysOnTop: true
+        alwaysOnTop: true,
+        loggingEnabled: false
     )
     static let minWidth: CGFloat = 300
     static let maxWidth: CGFloat = 800
@@ -713,6 +824,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         config = Config.load()
+        Logger.shared.enabled = config.loggingEnabled
 
         updateDockVisibility(config.showInDock)
         if config.showInMenuBar {
@@ -796,6 +908,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         alwaysOnTopItem.state = config.alwaysOnTop ? .on : .off
         menu.addItem(alwaysOnTopItem)
         menu.addItem(NSMenuItem.separator())
+        let loggingItem = NSMenuItem(title: "Enable Logging", action: #selector(toggleLogging), keyEquivalent: "")
+        loggingItem.state = config.loggingEnabled ? .on : .off
+        menu.addItem(loggingItem)
+        menu.addItem(NSMenuItem(title: "Show Log File", action: #selector(showLogFile), keyEquivalent: ""))
+        menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Reset Settings", action: #selector(resetSettings), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q"))
@@ -806,6 +923,27 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         updateAlwaysOnTop(!config.alwaysOnTop)
     }
 
+    @objc func toggleLogging() {
+        config.loggingEnabled.toggle()
+        config.save()
+        Logger.shared.enabled = config.loggingEnabled
+
+        if let menu = statusItem?.menu,
+           let item = menu.items.first(where: { $0.title == "Enable Logging" }) {
+            item.state = config.loggingEnabled ? .on : .off
+        }
+
+        if config.loggingEnabled {
+            Logger.shared.logAlways("Logging enabled")
+        } else {
+            Logger.shared.deleteLogFile()
+        }
+    }
+
+    @objc func showLogFile() {
+        NSWorkspace.shared.selectFile(Logger.logFileURL.path, inFileViewerRootedAtPath: "")
+    }
+
     @objc func resetSettings() {
         config = Config.defaultConfig
         config.save()
@@ -813,6 +951,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         updateDockVisibility(config.showInDock)
         updateShowInMenuBar(config.showInMenuBar)
         updateAlwaysOnTop(config.alwaysOnTop)
+        Logger.shared.enabled = config.loggingEnabled
+
+        if let menu = statusItem?.menu {
+            if let item = menu.items.first(where: { $0.title == "Enable Logging" }) {
+                item.state = config.loggingEnabled ? .on : .off
+            }
+        }
+
         if config.launchOnLogin {
             LaunchAgent.install()
         } else {
