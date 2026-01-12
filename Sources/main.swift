@@ -88,6 +88,8 @@ class MediaController {
     var cachedArtwork: Data?
     var cachedInfo: NowPlayingInfo?
 
+    private let scriptQueue = DispatchQueue(label: "com.nanomuz.scripts", qos: .userInitiated)
+
     private init() {}
 
     // JXA script for track info (MRNowPlayingRequest - works on macOS 15.4+)
@@ -115,46 +117,56 @@ class MediaController {
     }
     """
 
-    func fetchFromMediaRemote() {
-        let jsonStr = runJXA(jxaScript)
+    func fetchFromMediaRemote(completion: @escaping () -> Void) {
+        runJXAAsync(jxaScript) { [weak self] jsonStr in
+            guard let self = self else {
+                completion()
+                return
+            }
 
-        guard let jsonStr = jsonStr,
-              !jsonStr.isEmpty,
-              jsonStr != "null" else {
-            Logger.shared.log("MediaRemote: No data from JXA", key: "no_jxa_data")
-            cachedInfo = nil
-            cachedArtwork = nil
-            return
-        }
+            guard let jsonStr = jsonStr,
+                  !jsonStr.isEmpty,
+                  jsonStr != "null" else {
+                Logger.shared.log("MediaRemote: No data from JXA", key: "no_jxa_data")
+                self.cachedInfo = nil
+                self.cachedArtwork = nil
+                completion()
+                return
+            }
 
-        guard let data = jsonStr.data(using: .utf8),
-              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let title = dict["title"] as? String else {
-            Logger.shared.log("MediaRemote: Failed to parse JSON: \(jsonStr.prefix(100))", key: "json_parse_error")
-            cachedInfo = nil
-            cachedArtwork = nil
-            return
-        }
+            guard let data = jsonStr.data(using: .utf8),
+                  let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let title = dict["title"] as? String else {
+                Logger.shared.log("MediaRemote: Failed to parse JSON: \(jsonStr.prefix(100))", key: "json_parse_error")
+                self.cachedInfo = nil
+                self.cachedArtwork = nil
+                completion()
+                return
+            }
 
-        let oldTitle = cachedInfo?.title
-        let artist = dict["artist"] as? String ?? ""
-        let artworkUrl = dict["artworkId"] as? String
+            let oldTitle = self.cachedInfo?.title
+            let artist = dict["artist"] as? String ?? ""
+            let artworkUrl = dict["artworkId"] as? String
 
-        cachedInfo = NowPlayingInfo(
-            title: title,
-            artist: artist,
-            album: dict["album"] as? String ?? "",
-            isPlaying: (dict["playbackRate"] as? Double ?? 0) > 0,
-            artworkUrl: artworkUrl,
-            isFavorited: isFavorited()
-        )
+            self.isFavoritedAsync { isFav in
+                self.cachedInfo = NowPlayingInfo(
+                    title: title,
+                    artist: artist,
+                    album: dict["album"] as? String ?? "",
+                    isPlaying: (dict["playbackRate"] as? Double ?? 0) > 0,
+                    artworkUrl: artworkUrl,
+                    isFavorited: isFav
+                )
 
-        if oldTitle != title {
-            Logger.shared.logAlways("Track changed: \(artist) - \(title)")
-            if let url = artworkUrl {
-                Logger.shared.logAlways("Artwork URL: \(url)")
-            } else {
-                Logger.shared.logAlways("Artwork URL: nil")
+                if oldTitle != title {
+                    Logger.shared.logAlways("Track changed: \(artist) - \(title)")
+                    if let url = artworkUrl {
+                        Logger.shared.logAlways("Artwork URL: \(url)")
+                    } else {
+                        Logger.shared.logAlways("Artwork URL: nil")
+                    }
+                }
+                completion()
             }
         }
     }
@@ -188,68 +200,83 @@ class MediaController {
         }
     }
 
-    func playPause() {
-        runAppleScript("tell application \"Music\" to playpause")
-    }
-
-    func nextTrack() {
-        runAppleScript("tell application \"Music\" to next track")
-    }
-
-    func previousTrack() {
-        runAppleScript("tell application \"Music\" to previous track")
-    }
-
-    func isFavorited() -> Bool {
-        let result = runAppleScript("tell application \"Music\" to get favorited of current track")
-        return result == "true"
-    }
-
-    func toggleFavorite() {
-        let current = isFavorited()
-        runAppleScript("tell application \"Music\" to set favorited of current track to \(current ? "false" : "true")")
-        if var info = cachedInfo {
-            info.isFavorited = !current
-            cachedInfo = info
+    func playPause(completion: (() -> Void)? = nil) {
+        runAppleScriptAsync("tell application \"Music\" to playpause") { _ in
+            completion?()
         }
     }
 
-    private func runJXA(_ script: String) -> String? {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        task.arguments = ["-l", "JavaScript", "-e", script]
-
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
-
-        do {
-            try task.run()
-            task.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        } catch {
-            return nil
+    func nextTrack(completion: (() -> Void)? = nil) {
+        runAppleScriptAsync("tell application \"Music\" to next track") { _ in
+            completion?()
         }
     }
 
-    @discardableResult
-    private func runAppleScript(_ script: String) -> String? {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        task.arguments = ["-e", script]
+    func previousTrack(completion: (() -> Void)? = nil) {
+        runAppleScriptAsync("tell application \"Music\" to previous track") { _ in
+            completion?()
+        }
+    }
 
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
+    func isFavoritedAsync(completion: @escaping (Bool) -> Void) {
+        runAppleScriptAsync("tell application \"Music\" to get favorited of current track") { result in
+            completion(result == "true")
+        }
+    }
 
-        do {
-            try task.run()
-            task.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        } catch {
-            return nil
+    func toggleFavorite(completion: (() -> Void)? = nil) {
+        isFavoritedAsync { [weak self] current in
+            self?.runAppleScriptAsync("tell application \"Music\" to set favorited of current track to \(current ? "false" : "true")") { _ in
+                if var info = self?.cachedInfo {
+                    info.isFavorited = !current
+                    self?.cachedInfo = info
+                }
+                completion?()
+            }
+        }
+    }
+
+    private func runJXAAsync(_ script: String, completion: @escaping (String?) -> Void) {
+        scriptQueue.async {
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            task.arguments = ["-l", "JavaScript", "-e", script]
+
+            let pipe = Pipe()
+            task.standardOutput = pipe
+            task.standardError = FileHandle.nullDevice
+
+            do {
+                try task.run()
+                task.waitUntilExit()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                let result = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                completion(result)
+            } catch {
+                completion(nil)
+            }
+        }
+    }
+
+    private func runAppleScriptAsync(_ script: String, completion: ((String?) -> Void)? = nil) {
+        scriptQueue.async {
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            task.arguments = ["-e", script]
+
+            let pipe = Pipe()
+            task.standardOutput = pipe
+            task.standardError = FileHandle.nullDevice
+
+            do {
+                try task.run()
+                task.waitUntilExit()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                let result = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                completion?(result)
+            } catch {
+                completion?(nil)
+            }
         }
     }
 }
@@ -842,6 +869,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var updateTimer: Timer?
     var lastArtworkId: String?
     var statusItem: NSStatusItem?
+    var isUpdating = false
 
     static let playerHeight: CGFloat = 50
 
@@ -880,10 +908,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             baseColor: NSColor(hex: config.backgroundColor),
             opacity: config.backgroundOpacity
         )
-        playerView.onFavorite = { [weak self] in MediaController.shared.toggleFavorite(); self?.scheduleUpdate() }
-        playerView.onPlayPause = { [weak self] in MediaController.shared.playPause(); self?.scheduleUpdate() }
-        playerView.onNext = { [weak self] in MediaController.shared.nextTrack(); self?.scheduleUpdate() }
-        playerView.onPrevious = { [weak self] in MediaController.shared.previousTrack(); self?.scheduleUpdate() }
+        playerView.onFavorite = { [weak self] in
+            MediaController.shared.toggleFavorite {
+                DispatchQueue.main.async { self?.scheduleUpdate() }
+            }
+        }
+        playerView.onPlayPause = { [weak self] in
+            MediaController.shared.playPause {
+                DispatchQueue.main.async { self?.scheduleUpdate() }
+            }
+        }
+        playerView.onNext = { [weak self] in
+            MediaController.shared.nextTrack {
+                DispatchQueue.main.async { self?.scheduleUpdate() }
+            }
+        }
+        playerView.onPrevious = { [weak self] in
+            MediaController.shared.previousTrack {
+                DispatchQueue.main.async { self?.scheduleUpdate() }
+            }
+        }
         playerView.onQuit = { [weak self] in self?.confirmQuit() }
         playerView.onSettingsToggle = { [weak self] in self?.toggleSettings() }
         playerView.onOpacityChange = { [weak self] opacity in self?.updateOpacity(opacity) }
@@ -1137,39 +1181,46 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func updateNowPlaying() {
-        MediaController.shared.fetchFromMediaRemote()
+        guard !isUpdating else { return }
+        isUpdating = true
 
-        let info = MediaController.shared.cachedInfo
-        playerView.nowPlaying = info
+        MediaController.shared.fetchFromMediaRemote { [weak self] in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.isUpdating = false
 
-        let artworkId = info.map { "\($0.title)-\($0.artist)-\($0.album)" }
-        if artworkId != lastArtworkId {
-            lastArtworkId = artworkId
-            playerView.artworkImage = nil
-            MediaController.shared.cachedArtwork = nil
+                let info = MediaController.shared.cachedInfo
+                self.playerView.nowPlaying = info
 
-            // Fetch artwork when track changes
-            if info != nil {
-                DispatchQueue.global(qos: .userInitiated).async {
-                    MediaController.shared.fetchArtwork()
-                    DispatchQueue.main.async { [weak self] in
-                        if let data = MediaController.shared.cachedArtwork,
-                           let image = NSImage(data: data) {
-                            self?.playerView.artworkImage = image
-                            self?.playerView.setNeedsDisplay(self?.playerView.bounds ?? .zero)
+                let artworkId = info.map { "\($0.title)-\($0.artist)-\($0.album)" }
+                if artworkId != self.lastArtworkId {
+                    self.lastArtworkId = artworkId
+                    self.playerView.artworkImage = nil
+                    MediaController.shared.cachedArtwork = nil
+
+                    if info != nil {
+                        DispatchQueue.global(qos: .userInitiated).async {
+                            MediaController.shared.fetchArtwork()
+                            DispatchQueue.main.async { [weak self] in
+                                if let data = MediaController.shared.cachedArtwork,
+                                   let image = NSImage(data: data) {
+                                    self?.playerView.artworkImage = image
+                                    self?.playerView.setNeedsDisplay(self?.playerView.bounds ?? .zero)
+                                }
+                            }
                         }
                     }
                 }
+
+                if let data = MediaController.shared.cachedArtwork, self.playerView.artworkImage == nil {
+                    if let image = NSImage(data: data) {
+                        self.playerView.artworkImage = image
+                    }
+                }
+
+                self.playerView.setNeedsDisplay(self.playerView.bounds)
             }
         }
-
-        if let data = MediaController.shared.cachedArtwork, playerView.artworkImage == nil {
-            if let image = NSImage(data: data) {
-                playerView.artworkImage = image
-            }
-        }
-
-        playerView.setNeedsDisplay(playerView.bounds)
     }
 
     @objc func windowDidMove(_ notification: Notification) {
