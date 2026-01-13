@@ -80,6 +80,7 @@ struct NowPlayingInfo {
     let isPlaying: Bool
     let artworkUrl: String?
     var isFavorited: Bool
+    let duration: Int?
 }
 
 class MediaController {
@@ -113,6 +114,8 @@ class MediaController {
         if (rate && !rate.isNil()) result.playbackRate = ObjC.unwrap(rate);
         var artworkId = info.valueForKey('kMRMediaRemoteNowPlayingInfoArtworkIdentifier');
         if (artworkId && !artworkId.isNil()) result.artworkId = ObjC.unwrap(artworkId);
+        var duration = info.valueForKey('kMRMediaRemoteNowPlayingInfoDuration');
+        if (duration && !duration.isNil()) result.duration = ObjC.unwrap(duration);
         JSON.stringify(result);
     }
     """
@@ -148,6 +151,7 @@ class MediaController {
             let artist = dict["artist"] as? String ?? ""
             let artworkUrl = dict["artworkId"] as? String
 
+            let durationValue = dict["duration"] as? Double
             self.isFavoritedAsync { isFav in
                 self.cachedInfo = NowPlayingInfo(
                     title: title,
@@ -155,7 +159,8 @@ class MediaController {
                     album: dict["album"] as? String ?? "",
                     isPlaying: (dict["playbackRate"] as? Double ?? 0) > 0,
                     artworkUrl: artworkUrl,
-                    isFavorited: isFav
+                    isFavorited: isFav,
+                    duration: durationValue.map { Int($0) }
                 )
 
                 if oldTitle != title {
@@ -345,6 +350,9 @@ struct Config: Codable {
     var showInMenuBar: Bool
     var alwaysOnTop: Bool
     var loggingEnabled: Bool
+    var lastfmEnabled: Bool
+    var lastfmUsername: String
+    var lastfmSessionKey: String
 
     static let defaultConfig = Config(
         windowX: 100,
@@ -356,7 +364,10 @@ struct Config: Codable {
         showInDock: false,
         showInMenuBar: true,
         alwaysOnTop: true,
-        loggingEnabled: false
+        loggingEnabled: false,
+        lastfmEnabled: true,
+        lastfmUsername: "",
+        lastfmSessionKey: ""
     )
     static let minWidth: CGFloat = 300
     static let maxWidth: CGFloat = 800
@@ -421,6 +432,331 @@ struct LaunchAgent {
     static func uninstall() {
         try? FileManager.default.removeItem(at: plistURL)
     }
+}
+
+// MARK: - Last.fm Session Store
+
+import CommonCrypto
+
+struct LastFMSessionStore {
+    static func saveSessionKey(_ sessionKey: String) -> Bool {
+        var config = Config.load()
+        config.lastfmSessionKey = sessionKey
+        config.save()
+        return true
+    }
+
+    static func loadSessionKey() -> String? {
+        let key = Config.load().lastfmSessionKey
+        return key.isEmpty ? nil : key
+    }
+
+    static func deleteSessionKey() {
+        var config = Config.load()
+        config.lastfmSessionKey = ""
+        config.lastfmUsername = ""
+        config.save()
+    }
+}
+
+// MARK: - Last.fm Client
+
+class LastFMClient {
+    static let shared = LastFMClient()
+
+    private let apiKey = "LASTFM_API_KEY_PLACEHOLDER"
+    private let apiSecret = "LASTFM_API_SECRET_PLACEHOLDER"
+    private let apiBaseURL = "https://ws.audioscrobbler.com/2.0/"
+    private let requestQueue = DispatchQueue(label: "com.nanomuz.lastfm.client", qos: .userInitiated)
+
+    private init() {}
+
+    func generateSignature(params: [String: String]) -> String {
+        let sortedKeys = params.keys.sorted()
+        var signatureString = ""
+        for key in sortedKeys {
+            signatureString += key + (params[key] ?? "")
+        }
+        signatureString += apiSecret
+        return md5(signatureString)
+    }
+
+    private func md5(_ string: String) -> String {
+        let data = Data(string.utf8)
+        var digest = [UInt8](repeating: 0, count: Int(CC_MD5_DIGEST_LENGTH))
+        data.withUnsafeBytes { buffer in
+            _ = CC_MD5(buffer.baseAddress, CC_LONG(data.count), &digest)
+        }
+        return digest.map { String(format: "%02hhx", $0) }.joined()
+    }
+
+    func getToken(completion: @escaping (String?) -> Void) {
+        var params: [String: String] = ["method": "auth.getToken", "api_key": apiKey]
+        params["api_sig"] = generateSignature(params: params)
+        params["format"] = "json"
+        performGET(params: params) { result in
+            completion((result?["token"] as? String))
+        }
+    }
+
+    func getAuthorizationURL(token: String) -> URL? {
+        URL(string: "https://www.last.fm/api/auth/?api_key=\(apiKey)&token=\(token)")
+    }
+
+    func getSession(token: String, completion: @escaping (String?, String?) -> Void) {
+        var params: [String: String] = ["method": "auth.getSession", "api_key": apiKey, "token": token]
+        params["api_sig"] = generateSignature(params: params)
+        params["format"] = "json"
+        performGET(params: params) { result in
+            if let session = result?["session"] as? [String: Any],
+               let key = session["key"] as? String,
+               let name = session["name"] as? String {
+                completion(key, name)
+            } else {
+                completion(nil, nil)
+            }
+        }
+    }
+
+    func updateNowPlaying(artist: String, track: String, album: String?, duration: Int?, sessionKey: String, completion: @escaping (Bool) -> Void) {
+        var params: [String: String] = ["method": "track.updateNowPlaying", "api_key": apiKey, "sk": sessionKey, "artist": artist, "track": track]
+        if let album = album, !album.isEmpty { params["album"] = album }
+        if let duration = duration, duration > 0 { params["duration"] = String(duration) }
+        params["api_sig"] = generateSignature(params: params)
+        params["format"] = "json"
+        performPOST(params: params) { completion($0 != nil) }
+    }
+
+    func scrobble(artist: String, track: String, album: String?, timestamp: Int, sessionKey: String, completion: @escaping (Bool) -> Void) {
+        var params: [String: String] = ["method": "track.scrobble", "api_key": apiKey, "sk": sessionKey, "artist": artist, "track": track, "timestamp": String(timestamp)]
+        if let album = album, !album.isEmpty { params["album"] = album }
+        params["api_sig"] = generateSignature(params: params)
+        params["format"] = "json"
+        performPOST(params: params) { completion($0 != nil) }
+    }
+
+    private func performGET(params: [String: String], completion: @escaping ([String: Any]?) -> Void) {
+        requestQueue.async {
+            var urlComponents = URLComponents(string: self.apiBaseURL)!
+            urlComponents.queryItems = params.map { URLQueryItem(name: $0.key, value: $0.value) }
+            guard let url = urlComponents.url else { completion(nil); return }
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            request.timeoutInterval = 30
+            URLSession.shared.dataTask(with: request) { data, _, error in
+                guard error == nil, let data = data,
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      json["error"] == nil else { completion(nil); return }
+                completion(json)
+            }.resume()
+        }
+    }
+
+    private func performPOST(params: [String: String], completion: @escaping ([String: Any]?) -> Void) {
+        requestQueue.async {
+            guard let url = URL(string: self.apiBaseURL) else { completion(nil); return }
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+            request.timeoutInterval = 30
+            var allowed = CharacterSet.alphanumerics
+            allowed.insert(charactersIn: "-._~")
+            request.httpBody = params.map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: allowed) ?? "")" }.joined(separator: "&").data(using: .utf8)
+            URLSession.shared.dataTask(with: request) { data, _, error in
+                if let error = error {
+                    Logger.shared.logAlways("Last.fm API error: \(error.localizedDescription)")
+                    completion(nil); return
+                }
+                guard let data = data else { Logger.shared.logAlways("Last.fm API: No data"); completion(nil); return }
+                guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    Logger.shared.logAlways("Last.fm API: Invalid JSON - \(String(data: data, encoding: .utf8) ?? "?")")
+                    completion(nil); return
+                }
+                if let errorCode = json["error"], let errorMsg = json["message"] {
+                    Logger.shared.logAlways("Last.fm API error \(errorCode): \(errorMsg)")
+                    completion(nil); return
+                }
+                completion(json)
+            }.resume()
+        }
+    }
+}
+
+// MARK: - Last.fm Auth Service
+
+class LastFMAuthService {
+    static let shared = LastFMAuthService()
+    private var pendingToken: String?
+    private var authTimer: Timer?
+
+    var isAuthenticated: Bool { LastFMSessionStore.loadSessionKey() != nil }
+    var sessionKey: String? { LastFMSessionStore.loadSessionKey() }
+
+    private init() {}
+
+    func startAuthentication(completion: @escaping (Bool, String?) -> Void) {
+        LastFMClient.shared.getToken { [weak self] token in
+            guard let self = self, let token = token else {
+                DispatchQueue.main.async { completion(false, nil) }
+                return
+            }
+            self.pendingToken = token
+            guard let url = LastFMClient.shared.getAuthorizationURL(token: token) else {
+                DispatchQueue.main.async { completion(false, nil) }
+                return
+            }
+            DispatchQueue.main.async {
+                NSWorkspace.shared.open(url)
+                Logger.shared.logAlways("Last.fm: Opened browser for authorization")
+            }
+            self.startPollingForSession(completion: completion)
+        }
+    }
+
+    private func startPollingForSession(completion: @escaping (Bool, String?) -> Void) {
+        var attempts = 0
+        DispatchQueue.main.async { [weak self] in
+            self?.authTimer?.invalidate()
+            self?.authTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] timer in
+            guard let self = self, let token = self.pendingToken else {
+                timer.invalidate()
+                DispatchQueue.main.async { completion(false, nil) }
+                return
+            }
+            attempts += 1
+            if attempts >= 60 {
+                timer.invalidate()
+                self.pendingToken = nil
+                Logger.shared.logAlways("Last.fm: Authentication timed out")
+                DispatchQueue.main.async { completion(false, nil) }
+                return
+            }
+            LastFMClient.shared.getSession(token: token) { sessionKey, username in
+                if let sessionKey = sessionKey, let username = username {
+                    timer.invalidate()
+                    self.pendingToken = nil
+                    if LastFMSessionStore.saveSessionKey(sessionKey) {
+                        Logger.shared.logAlways("Last.fm: Successfully authenticated as \(username)")
+                        DispatchQueue.main.async { completion(true, username) }
+                    } else {
+                        DispatchQueue.main.async { completion(false, nil) }
+                    }
+                }
+            }
+            }
+        }
+    }
+
+    func logout() {
+        authTimer?.invalidate()
+        authTimer = nil
+        pendingToken = nil
+        LastFMSessionStore.deleteSessionKey()
+        Logger.shared.logAlways("Last.fm: Logged out")
+    }
+}
+
+// MARK: - Last.fm Scrobble Service
+
+class LastFMScrobbleService {
+    static let shared = LastFMScrobbleService()
+
+    private struct PlaybackSession {
+        let track: String, artist: String, album: String, startedAt: Date
+        var lastResumedAt: Date?, accumulatedPlaySeconds: Double, scrobbled: Bool, nowPlayingSent: Bool, durationSeconds: Int?
+        var uniqueKey: String { "\(artist)|\(track)|\(album)|\(Int(startedAt.timeIntervalSince1970))" }
+    }
+
+    private var currentSession: PlaybackSession?
+    private var recentScrobbles: [String] = []
+    private var lastNowPlayingAt: Date?
+    var enabled: Bool = true
+
+    private init() {}
+
+    func trackChanged(artist: String, track: String, album: String, isPlaying: Bool, durationSeconds: Int? = nil) {
+        guard enabled else { Logger.shared.logAlways("Last.fm: Scrobbling disabled"); return }
+        guard !artist.isEmpty, !track.isEmpty else { Logger.shared.logAlways("Last.fm: Empty artist/track"); return }
+        guard LastFMAuthService.shared.isAuthenticated else { Logger.shared.logAlways("Last.fm: Not authenticated"); return }
+        if let session = currentSession, session.artist == artist, session.track == track, session.album == album {
+            if isPlaying { resumePlayback() } else { pausePlayback() }
+            return
+        }
+        scrobbleIfNeeded()
+        let now = Date()
+        currentSession = PlaybackSession(track: track, artist: artist, album: album, startedAt: now, lastResumedAt: isPlaying ? now : nil, accumulatedPlaySeconds: 0, scrobbled: false, nowPlayingSent: false, durationSeconds: durationSeconds)
+        Logger.shared.logAlways("Last.fm: New track session - \(artist) - \(track) (duration: \(durationSeconds.map { "\($0)s" } ?? "unknown"), isPlaying: \(isPlaying))")
+        if isPlaying { sendNowPlaying() } else { Logger.shared.logAlways("Last.fm: Not playing, skip Now Playing") }
+    }
+
+    func playbackStateChanged(isPlaying: Bool) {
+        guard enabled, currentSession != nil else { return }
+        if isPlaying { resumePlayback() } else { pausePlayback() }
+    }
+
+    private func resumePlayback() {
+        guard var session = currentSession, session.lastResumedAt == nil else { return }
+        session.lastResumedAt = Date()
+        currentSession = session
+        if lastNowPlayingAt == nil || Date().timeIntervalSince(lastNowPlayingAt!) >= 15 { sendNowPlaying() }
+    }
+
+    private func pausePlayback() {
+        guard var session = currentSession, let lastResumed = session.lastResumedAt else { return }
+        session.accumulatedPlaySeconds += Date().timeIntervalSince(lastResumed)
+        session.lastResumedAt = nil
+        currentSession = session
+        checkAndScrobble()
+    }
+
+    func tick() {
+        guard enabled, var session = currentSession, let lastResumed = session.lastResumedAt else { return }
+        let totalPlayed = session.accumulatedPlaySeconds + Date().timeIntervalSince(lastResumed)
+        if shouldScrobble(session: session, totalPlayed: totalPlayed), !session.scrobbled {
+            session.accumulatedPlaySeconds = totalPlayed
+            session.lastResumedAt = Date()
+            session.scrobbled = true
+            currentSession = session
+            performScrobble(session: session)
+        }
+    }
+
+    private func sendNowPlaying() {
+        guard let session = currentSession, let sessionKey = LastFMAuthService.shared.sessionKey else { return }
+        lastNowPlayingAt = Date()
+        LastFMClient.shared.updateNowPlaying(artist: session.artist, track: session.track, album: session.album.isEmpty ? nil : session.album, duration: session.durationSeconds, sessionKey: sessionKey) { success in
+            Logger.shared.logAlways("Last.fm: Now playing \(success ? "sent" : "FAILED") - \(session.artist) - \(session.track)")
+        }
+    }
+
+    private func scrobbleIfNeeded() {
+        guard let session = currentSession else { return }
+        var totalPlayed = session.accumulatedPlaySeconds
+        if let lastResumed = session.lastResumedAt { totalPlayed += Date().timeIntervalSince(lastResumed) }
+        if shouldScrobble(session: session, totalPlayed: totalPlayed), !session.scrobbled { performScrobble(session: session) }
+    }
+
+    private func checkAndScrobble() {
+        guard let session = currentSession, !session.scrobbled, shouldScrobble(session: session, totalPlayed: session.accumulatedPlaySeconds) else { return }
+        performScrobble(session: session)
+    }
+
+    private func shouldScrobble(session: PlaybackSession, totalPlayed: Double) -> Bool {
+        guard let duration = session.durationSeconds, duration >= 30 else { return totalPlayed >= 240 }
+        return totalPlayed >= min(Double(duration) * 0.5, 240)
+    }
+
+    private func performScrobble(session: PlaybackSession) {
+        guard !recentScrobbles.contains(session.uniqueKey), let sessionKey = LastFMAuthService.shared.sessionKey else { return }
+        recentScrobbles.append(session.uniqueKey)
+        if recentScrobbles.count > 100 { recentScrobbles.removeFirst() }
+        if var s = currentSession, s.uniqueKey == session.uniqueKey { s.scrobbled = true; currentSession = s }
+        LastFMClient.shared.scrobble(artist: session.artist, track: session.track, album: session.album.isEmpty ? nil : session.album, timestamp: Int(session.startedAt.timeIntervalSince1970), sessionKey: sessionKey) { success in
+            Logger.shared.logAlways("Last.fm: \(success ? "Scrobbled" : "Failed to scrobble") \(session.artist) - \(session.track)")
+        }
+    }
+
+    func reset() { currentSession = nil; lastNowPlayingAt = nil }
 }
 
 // MARK: - Color Helpers
@@ -502,6 +838,9 @@ class PlayerView: NSView {
     var onShowInDockChange: ((Bool) -> Void)?
     var onShowInMenuBarChange: ((Bool) -> Void)?
     var onAlwaysOnTopChange: ((Bool) -> Void)?
+    var onLastfmEnabledChange: ((Bool) -> Void)?
+    var onLastfmConnect: (() -> Void)?
+    var onLastfmDisconnect: (() -> Void)?
 
     private var trackingArea: NSTrackingArea?
     private var hoveredButton: String?
@@ -517,6 +856,10 @@ class PlayerView: NSView {
     private var showInMenuBarLabel: NSTextField?
     private var alwaysOnTopCheckbox: NSButton?
     private var alwaysOnTopLabel: NSTextField?
+    private var lastfmEnabledCheckbox: NSButton?
+    private var lastfmEnabledLabel: NSTextField?
+    private var lastfmConnectButton: NSButton?
+    private var lastfmStatusLabel: NSTextField?
 
     // Marquee animation
     private var scrollOffset: CGFloat = 0
@@ -525,11 +868,16 @@ class PlayerView: NSView {
     private let scrollSpeed: CGFloat = 0.5
     private let pauseFrames: Int = 120
 
-    static let settingsPanelHeight: CGFloat = 70
+    static let settingsPanelHeight: CGFloat = 96
+
+    var lastfmUsername: String = ""
+    var lastfmConnected: Bool = false
 
     override var isFlipped: Bool { true }
 
-    func setupSettingsControls(opacity: CGFloat, color: NSColor, launchOnLogin: Bool, showInDock: Bool, showInMenuBar: Bool, alwaysOnTop: Bool) {
+    func setupSettingsControls(opacity: CGFloat, color: NSColor, launchOnLogin: Bool, showInDock: Bool, showInMenuBar: Bool, alwaysOnTop: Bool, lastfmEnabled: Bool = true, lastfmConnected: Bool = false, lastfmUsername: String = "") {
+        self.lastfmUsername = lastfmUsername
+        self.lastfmConnected = lastfmConnected
         opacitySlider = NSSlider(value: Double(opacity), minValue: 0.3, maxValue: 1.0, target: self, action: #selector(opacityChanged))
         opacitySlider?.isContinuous = true
         addSubview(opacitySlider!)
@@ -573,9 +921,36 @@ class PlayerView: NSView {
         alwaysOnTopLabel?.font = NSFont.systemFont(ofSize: 11)
         addSubview(alwaysOnTopLabel!)
 
-        updateSettingsColors()
+        lastfmEnabledCheckbox = NSButton(checkboxWithTitle: "", target: self, action: #selector(lastfmEnabledChanged))
+        lastfmEnabledCheckbox?.state = lastfmEnabled ? .on : .off
+        addSubview(lastfmEnabledCheckbox!)
+        lastfmEnabledLabel = NSTextField(labelWithString: "Scrobble")
+        lastfmEnabledLabel?.font = NSFont.systemFont(ofSize: 11)
+        addSubview(lastfmEnabledLabel!)
 
+        lastfmConnectButton = NSButton(title: lastfmConnected ? "Disconnect" : "Connect Last.fm", target: self, action: #selector(lastfmConnectClicked))
+        lastfmConnectButton?.bezelStyle = .rounded
+        lastfmConnectButton?.font = NSFont.systemFont(ofSize: 10)
+        addSubview(lastfmConnectButton!)
+
+        lastfmStatusLabel = NSTextField(labelWithString: lastfmConnected ? "as \(lastfmUsername)" : "")
+        lastfmStatusLabel?.font = NSFont.systemFont(ofSize: 10)
+        addSubview(lastfmStatusLabel!)
+
+        updateSettingsColors()
         updateSettingsControlsVisibility()
+    }
+
+    func updateLastfmStatus(connected: Bool, username: String) {
+        self.lastfmConnected = connected
+        self.lastfmUsername = username
+        lastfmConnectButton?.title = connected ? "Disconnect" : "Connect Last.fm"
+        lastfmStatusLabel?.stringValue = connected ? "as \(username)" : ""
+        setNeedsDisplay(bounds)
+    }
+
+    func updateLastfmEnabled(_ enabled: Bool) {
+        lastfmEnabledCheckbox?.state = enabled ? .on : .off
     }
 
     func updateSettingsControlsVisibility() {
@@ -591,12 +966,17 @@ class PlayerView: NSView {
         showInMenuBarLabel?.isHidden = hidden
         alwaysOnTopCheckbox?.isHidden = hidden
         alwaysOnTopLabel?.isHidden = hidden
+        lastfmEnabledCheckbox?.isHidden = hidden
+        lastfmEnabledLabel?.isHidden = hidden
+        lastfmConnectButton?.isHidden = hidden
+        lastfmStatusLabel?.isHidden = hidden
     }
 
     func updateSettingsControlsLayout() {
         guard isSettingsExpanded else { return }
         let row1Y = bounds.height - PlayerView.settingsPanelHeight + 8
         let row2Y = row1Y + 26
+        let row3Y = row2Y + 26
 
         opacityLabel?.frame = NSRect(x: 12, y: row1Y, width: 50, height: 20)
         opacitySlider?.frame = NSRect(x: 62, y: row1Y, width: 100, height: 20)
@@ -610,6 +990,11 @@ class PlayerView: NSView {
         showInMenuBarLabel?.frame = NSRect(x: 93, y: row2Y, width: 65, height: 20)
         alwaysOnTopCheckbox?.frame = NSRect(x: 163, y: row2Y, width: 18, height: 20)
         alwaysOnTopLabel?.frame = NSRect(x: 181, y: row2Y, width: 90, height: 20)
+
+        lastfmEnabledCheckbox?.frame = NSRect(x: 12, y: row3Y, width: 18, height: 20)
+        lastfmEnabledLabel?.frame = NSRect(x: 30, y: row3Y, width: 55, height: 20)
+        lastfmConnectButton?.frame = NSRect(x: 90, y: row3Y - 2, width: 110, height: 22)
+        lastfmStatusLabel?.frame = NSRect(x: 205, y: row3Y, width: 150, height: 20)
     }
 
     func updateSettingsColors() {
@@ -622,6 +1007,9 @@ class PlayerView: NSView {
         showInDockCheckbox?.contentTintColor = colors.text
         showInMenuBarCheckbox?.contentTintColor = colors.text
         alwaysOnTopCheckbox?.contentTintColor = colors.text
+        lastfmEnabledLabel?.textColor = colors.text
+        lastfmEnabledCheckbox?.contentTintColor = colors.text
+        lastfmStatusLabel?.textColor = colors.textSecondary
     }
 
     @objc private func opacityChanged() {
@@ -648,6 +1036,14 @@ class PlayerView: NSView {
 
     @objc private func alwaysOnTopChanged() {
         onAlwaysOnTopChange?(alwaysOnTopCheckbox?.state == .on)
+    }
+
+    @objc private func lastfmEnabledChanged() {
+        onLastfmEnabledChange?(lastfmEnabledCheckbox?.state == .on)
+    }
+
+    @objc private func lastfmConnectClicked() {
+        if lastfmConnected { onLastfmDisconnect?() } else { onLastfmConnect?() }
     }
 
     override func updateTrackingAreas() {
@@ -895,7 +1291,17 @@ class PlayerView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+
+        // Let interactive controls handle their own clicks
+        if let hitView = hitTest(point),
+           (hitView is NSButton || hitView is NSSlider || hitView is NSColorWell) {
+            Logger.shared.logAlways("Click intercepted by: \(type(of: hitView))")
+            super.mouseDown(with: event)
+            return
+        }
+
         if let button = buttonAt(point: point) {
+            Logger.shared.logAlways("Button clicked: \(button)")
             switch button {
             case "prev": onPrevious?()
             case "play": onPlayPause?()
@@ -987,14 +1393,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         playerView.onShowInDockChange = { [weak self] enabled in self?.updateShowInDock(enabled) }
         playerView.onShowInMenuBarChange = { [weak self] enabled in self?.updateShowInMenuBar(enabled) }
         playerView.onAlwaysOnTopChange = { [weak self] enabled in self?.updateAlwaysOnTop(enabled) }
+        playerView.onLastfmEnabledChange = { [weak self] enabled in self?.updateLastfmEnabled(enabled) }
+        playerView.onLastfmConnect = { [weak self] in self?.connectLastfm() }
+        playerView.onLastfmDisconnect = { [weak self] in self?.disconnectLastfm() }
+
+        let lastfmConnected = LastFMAuthService.shared.isAuthenticated
         playerView.setupSettingsControls(
             opacity: config.backgroundOpacity,
             color: NSColor(hex: config.backgroundColor),
             launchOnLogin: config.launchOnLogin,
             showInDock: config.showInDock,
             showInMenuBar: config.showInMenuBar,
-            alwaysOnTop: config.alwaysOnTop
+            alwaysOnTop: config.alwaysOnTop,
+            lastfmEnabled: config.lastfmEnabled,
+            lastfmConnected: lastfmConnected,
+            lastfmUsername: config.lastfmUsername
         )
+        LastFMScrobbleService.shared.enabled = config.lastfmEnabled
 
         window.contentView = playerView
         window.makeKeyAndOrderFront(nil)
@@ -1026,6 +1441,24 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         alwaysOnTopItem.state = config.alwaysOnTop ? .on : .off
         menu.addItem(alwaysOnTopItem)
         menu.addItem(NSMenuItem.separator())
+
+        let scrobbleItem = NSMenuItem(title: "Scrobbling", action: #selector(toggleScrobbling), keyEquivalent: "")
+        scrobbleItem.state = config.lastfmEnabled ? .on : .off
+        menu.addItem(scrobbleItem)
+
+        let lastfmConnected = LastFMAuthService.shared.isAuthenticated
+        let lastfmItem = NSMenuItem(title: lastfmConnected ? "Last.fm: Connected" : "Last.fm: Not Connected", action: nil, keyEquivalent: "")
+        let lastfmSubmenu = NSMenu()
+        let connectItem = NSMenuItem(title: "Connect", action: #selector(menuConnectLastfm), keyEquivalent: "")
+        connectItem.isHidden = lastfmConnected
+        lastfmSubmenu.addItem(connectItem)
+        let disconnectItem = NSMenuItem(title: "Disconnect", action: #selector(menuDisconnectLastfm), keyEquivalent: "")
+        disconnectItem.isHidden = !lastfmConnected
+        lastfmSubmenu.addItem(disconnectItem)
+        lastfmItem.submenu = lastfmSubmenu
+        menu.addItem(lastfmItem)
+
+        menu.addItem(NSMenuItem.separator())
         let loggingItem = NSMenuItem(title: "Enable Logging", action: #selector(toggleLogging), keyEquivalent: "")
         loggingItem.state = config.loggingEnabled ? .on : .off
         menu.addItem(loggingItem)
@@ -1041,6 +1474,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func toggleAlwaysOnTop() {
         updateAlwaysOnTop(!config.alwaysOnTop)
     }
+
+    @objc func toggleScrobbling() {
+        updateLastfmEnabled(!config.lastfmEnabled)
+        playerView.updateLastfmEnabled(config.lastfmEnabled)
+    }
+
+    @objc func menuConnectLastfm() { connectLastfm() }
+    @objc func menuDisconnectLastfm() { disconnectLastfm() }
 
     @objc func toggleLogging() {
         config.loggingEnabled.toggle()
@@ -1155,6 +1596,59 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    func updateLastfmEnabled(_ enabled: Bool) {
+        config.lastfmEnabled = enabled
+        config.save()
+        LastFMScrobbleService.shared.enabled = enabled
+        if !enabled { LastFMScrobbleService.shared.reset() }
+        updateLastfmMenuItems()
+        Logger.shared.logAlways("Last.fm: Scrobbling \(enabled ? "enabled" : "disabled")")
+    }
+
+    func connectLastfm() {
+        Logger.shared.logAlways("Last.fm: Starting authentication...")
+        LastFMAuthService.shared.startAuthentication { [weak self] success, username in
+            guard let self = self else { return }
+            if success, let username = username {
+                self.config = Config.load()  // Reload to get the saved session key
+                self.config.lastfmUsername = username
+                self.config.save()
+                self.playerView.updateLastfmStatus(connected: true, username: username)
+                self.updateLastfmMenuItems()
+            } else {
+                let alert = NSAlert()
+                alert.messageText = "Last.fm Authentication Failed"
+                alert.informativeText = "Could not authenticate with Last.fm. Please try again."
+                alert.alertStyle = .warning
+                alert.runModal()
+            }
+        }
+    }
+
+    func disconnectLastfm() {
+        LastFMAuthService.shared.logout()
+        LastFMScrobbleService.shared.reset()
+        config.lastfmUsername = ""
+        config.save()
+        playerView.updateLastfmStatus(connected: false, username: "")
+        updateLastfmMenuItems()
+    }
+
+    func updateLastfmMenuItems() {
+        guard let menu = statusItem?.menu else { return }
+        if let item = menu.item(withTitle: "Last.fm: Connected") ?? menu.item(withTitle: "Last.fm: Not Connected") {
+            let connected = LastFMAuthService.shared.isAuthenticated
+            item.title = connected ? "Last.fm: Connected" : "Last.fm: Not Connected"
+            if let submenu = item.submenu {
+                submenu.item(withTitle: "Connect")?.isHidden = connected
+                submenu.item(withTitle: "Disconnect")?.isHidden = !connected
+            }
+        }
+        if let scrobbleItem = menu.item(withTitle: "Scrobbling") {
+            scrobbleItem.state = config.lastfmEnabled ? .on : .off
+        }
+    }
+
     func confirmQuit() {
         let alert = NSAlert()
         alert.messageText = "Quit Nanomuz?"
@@ -1231,6 +1725,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    var lastScrobbleInfo: (artist: String, track: String, album: String)?
+
     func updateNowPlaying() {
         guard !isUpdating else { return }
         isUpdating = true
@@ -1242,6 +1738,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
                 let info = MediaController.shared.cachedInfo
                 self.playerView.nowPlaying = info
+
+                if let info = info {
+                    let currentInfo = (artist: info.artist, track: info.title, album: info.album)
+                    let trackChanged = self.lastScrobbleInfo?.artist != currentInfo.artist ||
+                                       self.lastScrobbleInfo?.track != currentInfo.track ||
+                                       self.lastScrobbleInfo?.album != currentInfo.album
+                    if trackChanged {
+                        self.lastScrobbleInfo = currentInfo
+                        LastFMScrobbleService.shared.trackChanged(artist: info.artist, track: info.title, album: info.album, isPlaying: info.isPlaying, durationSeconds: info.duration)
+                    } else {
+                        LastFMScrobbleService.shared.playbackStateChanged(isPlaying: info.isPlaying)
+                    }
+                    LastFMScrobbleService.shared.tick()
+                } else if self.lastScrobbleInfo != nil {
+                    self.lastScrobbleInfo = nil
+                    LastFMScrobbleService.shared.reset()
+                }
 
                 let artworkId = info.map { "\($0.title)-\($0.artist)-\($0.album)" }
                 if artworkId != self.lastArtworkId {

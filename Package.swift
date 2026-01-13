@@ -8,6 +8,10 @@ let package = Package(
         .executableTarget(
             name: "Nanomuz",
             path: "Sources"
+        ),
+        .testTarget(
+            name: "NanomuzTests",
+            path: "Tests"
         )
     ]
 )

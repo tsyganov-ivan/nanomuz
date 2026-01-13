@@ -25,3 +25,7 @@ Package.resolved
 /.claude
 /.idea
 /.vscode
+
+# Local secrets (never commit!)
+.env.local
+.envrc
