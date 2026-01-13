@@ -1,6 +1,6 @@
 cask "nanomuz" do
-  version "1.2"
-  sha256 "e4c26a0eb6de6fcf9560840ea9d24c4f1e3303a559c3855d46ef5cc26d393f01"
+  version "1.3"
+  sha256 "7e60db705c2ec2f1f12aab22ebf63bec234ca090ae00eb88c116189934a5247b"
 
   url "https://github.com/tsyganov-ivan/nanomuz/releases/download/v#{version}/Nanomuz-#{version}.dmg"
   name "Nanomuz"
