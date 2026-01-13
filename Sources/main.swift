@@ -178,24 +178,75 @@ class MediaController {
             return
         }
 
-        guard let urlString = info.artworkUrl else {
-            Logger.shared.log("fetchArtwork: No artwork URL for '\(info.title)'", key: "no_artwork_url_\(info.title)")
-            cachedArtwork = nil
-            return
+        // Try streaming artwork URL first (from MediaRemote)
+        if let urlString = info.artworkUrl, let url = URL(string: urlString) {
+            do {
+                let data = try Data(contentsOf: url)
+                cachedArtwork = data
+                Logger.shared.log("fetchArtwork: Loaded \(data.count) bytes from URL for '\(info.title)'", key: "artwork_url_\(info.title)")
+                return
+            } catch {
+                Logger.shared.log("fetchArtwork: URL failed for '\(info.title)': \(error.localizedDescription)", key: "artwork_url_fail_\(info.title)")
+            }
         }
 
-        guard let url = URL(string: urlString) else {
-            Logger.shared.logAlways("fetchArtwork: Invalid URL: \(urlString)")
-            cachedArtwork = nil
-            return
-        }
+        // Fallback: get artwork from Music app via AppleScript (for local files)
+        Logger.shared.log("fetchArtwork: Trying AppleScript fallback for '\(info.title)'", key: "artwork_as_try_\(info.title)")
+        fetchArtworkFromMusicApp()
+    }
+
+    private func fetchArtworkFromMusicApp() {
+        let tempPath = "/tmp/nanomuz_artwork.tmp"
+        let script = """
+        tell application "Music"
+            try
+                set currentTrack to current track
+                set artworkCount to count of artworks of currentTrack
+                if artworkCount > 0 then
+                    set artworkData to raw data of artwork 1 of currentTrack
+                    set tempPath to "\(tempPath)"
+                    set fileRef to open for access POSIX file tempPath with write permission
+                    set eof of fileRef to 0
+                    write artworkData to fileRef
+                    close access fileRef
+                    return tempPath
+                end if
+            on error errMsg
+                return "error:" & errMsg
+            end try
+        end tell
+        return ""
+        """
+
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        task.arguments = ["-e", script]
+
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = FileHandle.nullDevice
 
         do {
-            let data = try Data(contentsOf: url)
-            cachedArtwork = data
-            Logger.shared.log("fetchArtwork: Loaded \(data.count) bytes for '\(info.title)'", key: "artwork_loaded_\(info.title)")
+            try task.run()
+            task.waitUntilExit()
+            let output = pipe.fileHandleForReading.readDataToEndOfFile()
+            let result = String(data: output, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+            if result == tempPath {
+                let fileURL = URL(fileURLWithPath: tempPath)
+                let imageData = try Data(contentsOf: fileURL)
+                cachedArtwork = imageData
+                try? FileManager.default.removeItem(at: fileURL)
+                Logger.shared.log("fetchArtwork: Loaded \(imageData.count) bytes from Music app", key: "artwork_as_success")
+            } else if result.hasPrefix("error:") {
+                Logger.shared.log("fetchArtwork: AppleScript error: \(result)", key: "artwork_as_error")
+                cachedArtwork = nil
+            } else {
+                Logger.shared.log("fetchArtwork: No artwork in Music app (result: \(result))", key: "artwork_as_none")
+                cachedArtwork = nil
+            }
         } catch {
-            Logger.shared.logAlways("fetchArtwork: Failed to load from \(urlString): \(error.localizedDescription)")
+            Logger.shared.logAlways("fetchArtwork: AppleScript execution failed: \(error.localizedDescription)")
             cachedArtwork = nil
         }
     }
