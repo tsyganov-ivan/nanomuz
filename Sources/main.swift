@@ -866,7 +866,7 @@ class PlayerView: NSView {
     private var scrollTimer: Timer?
     private var scrollPauseCounter: Int = 0
     private let scrollSpeed: CGFloat = 0.5
-    private let pauseFrames: Int = 120
+    private let pauseFrames: Int = 60  // 2 seconds at 30 FPS
 
     static let settingsPanelHeight: CGFloat = 96
 
@@ -1218,7 +1218,7 @@ class PlayerView: NSView {
 
     func startScrollTimer() {
         guard scrollTimer == nil else { return }
-        scrollTimer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0, repeats: true) { [weak self] _ in
+        scrollTimer = Timer.scheduledTimer(withTimeInterval: 1.0/30.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             if self.scrollPauseCounter > 0 {
                 self.scrollPauseCounter -= 1
@@ -1415,7 +1415,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.makeKeyAndOrderFront(nil)
 
         updateNowPlaying()
-        updateTimer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+
+        // Listen for Music.app track changes (event-driven, low energy)
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(musicPlayerInfoChanged),
+            name: NSNotification.Name("com.apple.Music.playerInfo"),
+            object: nil
+        )
+
+        // Fallback timer for scrobble tick and edge cases (every 3 seconds)
+        updateTimer = Timer(timeInterval: 3.0, repeats: true) { [weak self] _ in
             self?.updateNowPlaying()
         }
         RunLoop.main.add(updateTimer!, forMode: .common)
@@ -1785,6 +1795,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self.playerView.setNeedsDisplay(self.playerView.bounds)
             }
         }
+    }
+
+    @objc func musicPlayerInfoChanged(_ notification: Notification) {
+        // Immediate update when Music.app sends track change notification
+        updateNowPlaying()
     }
 
     @objc func windowDidMove(_ notification: Notification) {
