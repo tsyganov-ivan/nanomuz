@@ -13,6 +13,7 @@ A tiny floating music widget for macOS that displays and controls Apple Music pl
 - Playback controls (play/pause, next, previous)
 - Add/remove tracks from favorites
 - Scrolling marquee for long titles
+- **Adaptive colors** — background color automatically adapts to album artwork
 - Customizable background color and opacity
 - Launch on login option
 - Horizontal resizing
@@ -65,14 +66,21 @@ make install
 ### Settings
 
 Click the ⚙ button to expand settings panel:
+
+**Appearance**
 - **Opacity slider** — adjust background transparency
-- **Color picker** — change background color
-- **Launch on Login** — start automatically on login
+- **Color picker** — choose manual background color (disabled when Adaptive is on)
+- **Adaptive** — automatically extract dominant color from album artwork
+
+**Window behavior**
+- **Always on Top** — keep widget above other windows
 - **Dock** — show/hide app icon in Dock
 - **Menu Bar** — show/hide icon in menu bar
-- **Always on Top** — keep widget above other windows
+- **Launch at login** — start automatically on login
+
+**Last.fm**
+- **Connect/Disconnect** — authenticate with your Last.fm account
 - **Scrobble** — enable/disable Last.fm scrobbling
-- **Connect Last.fm** — authenticate with your Last.fm account
 
 ## Last.fm Scrobbling
 
@@ -103,7 +111,7 @@ When scrobbling is enabled, Nanomuz sends the following data to Last.fm:
 - Album name (if available)
 - Playback timestamp
 
-Your Last.fm session key is securely stored in macOS Keychain.
+Your Last.fm session key is stored in the app's configuration file.
 
 ### Troubleshooting
 
@@ -120,6 +128,22 @@ Your Last.fm session key is securely stored in macOS Keychain.
 
 **To disconnect:** Settings → Disconnect, or menu bar → Last.fm → Disconnect
 
+## Adaptive Colors
+
+When enabled, the widget automatically extracts the dominant color from the current track's album artwork and uses it as the background color. This creates a visually harmonious look that changes with each track.
+
+### How It Works
+
+1. Album artwork is analyzed using a weighted color extraction algorithm
+2. The dominant color is extracted (excluding very dark/bright pixels)
+3. Saturated colors are weighted higher for more vibrant results
+4. Text and UI elements automatically adjust for contrast (light text on dark backgrounds, dark text on light backgrounds)
+
+### Toggle Adaptive Colors
+
+- **Enable**: Check the "Adaptive" checkbox in settings — color picker becomes disabled
+- **Disable**: Uncheck "Adaptive" — the widget returns to your manually selected color
+
 ### For Developers
 
 To build with Last.fm support, you need to register for API credentials:
@@ -133,7 +157,7 @@ To build with Last.fm support, you need to register for API credentials:
    ```
 4. Build: `make bundle`
 
-The Makefile automatically loads `.env.local` and injects keys at build time.
+The Makefile automatically loads `.env.local` and generates `Sources/Generated/Secrets.swift` at build time (this file is git-ignored).
 
 **Alternative: direnv (auto-loads on cd)**
 ```bash

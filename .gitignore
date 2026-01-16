@@ -29,3 +29,6 @@ Package.resolved
 # Local secrets (never commit!)
 .env.local
 .envrc
+
+# Generated files
+/Sources/Generated/

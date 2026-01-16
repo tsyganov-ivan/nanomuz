@@ -1,11 +1,11 @@
-.PHONY: all build bundle icon dmg clean install uninstall run inject-keys restore-keys
+.PHONY: all build bundle icon dmg clean install uninstall run generate-secrets
 
 APP_NAME = Nanomuz
 VERSION := $(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo "1.0.0")
 BUILD_DIR = .build/release
 BUNDLE = $(APP_NAME).app
 DMG = $(APP_NAME)-$(VERSION).dmg
-SOURCE_FILE = Sources/main.swift
+GENERATED_DIR = Sources/Generated
 
 # Last.fm API keys: loaded from .env.local (if exists) or environment variables
 # Create .env.local with: LASTFM_API_KEY=xxx and LASTFM_API_SECRET=xxx (no quotes!)
@@ -18,28 +18,29 @@ endif
 LASTFM_API_KEY := $(subst ",,$(LASTFM_API_KEY))
 LASTFM_API_SECRET := $(subst ",,$(LASTFM_API_SECRET))
 
-LASTFM_API_KEY ?= LASTFM_API_KEY_PLACEHOLDER
-LASTFM_API_SECRET ?= LASTFM_API_SECRET_PLACEHOLDER
+LASTFM_API_KEY ?=
+LASTFM_API_SECRET ?=
 
 all: bundle
 
-inject-keys:
-	@if [ "$(LASTFM_API_KEY)" != "LASTFM_API_KEY_PLACEHOLDER" ]; then \
-		sed -i '' 's/LASTFM_API_KEY_PLACEHOLDER/$(LASTFM_API_KEY)/g' $(SOURCE_FILE); \
-		sed -i '' 's/LASTFM_API_SECRET_PLACEHOLDER/$(LASTFM_API_SECRET)/g' $(SOURCE_FILE); \
-		echo "Injected Last.fm API keys"; \
+generate-secrets:
+	@mkdir -p $(GENERATED_DIR)
+	@echo "// Auto-generated file - do not edit" > $(GENERATED_DIR)/Secrets.swift
+	@echo "// Generated at: $$(date)" >> $(GENERATED_DIR)/Secrets.swift
+	@echo "" >> $(GENERATED_DIR)/Secrets.swift
+	@echo "enum Secrets {" >> $(GENERATED_DIR)/Secrets.swift
+	@if [ -n "$(LASTFM_API_KEY)" ]; then \
+		echo "    static let lastfmApiKey = \"$(LASTFM_API_KEY)\"" >> $(GENERATED_DIR)/Secrets.swift; \
+		echo "    static let lastfmApiSecret = \"$(LASTFM_API_SECRET)\"" >> $(GENERATED_DIR)/Secrets.swift; \
+	else \
+		echo "    static let lastfmApiKey = \"\"" >> $(GENERATED_DIR)/Secrets.swift; \
+		echo "    static let lastfmApiSecret = \"\"" >> $(GENERATED_DIR)/Secrets.swift; \
 	fi
+	@echo "}" >> $(GENERATED_DIR)/Secrets.swift
+	@echo "Generated Secrets.swift"
 
-restore-keys:
-	@if [ "$(LASTFM_API_KEY)" != "LASTFM_API_KEY_PLACEHOLDER" ]; then \
-		sed -i '' 's/$(LASTFM_API_KEY)/LASTFM_API_KEY_PLACEHOLDER/g' $(SOURCE_FILE); \
-		sed -i '' 's/$(LASTFM_API_SECRET)/LASTFM_API_SECRET_PLACEHOLDER/g' $(SOURCE_FILE); \
-		echo "Restored Last.fm API key placeholders"; \
-	fi
-
-build: inject-keys
+build: generate-secrets
 	swift build -c release
-	@$(MAKE) restore-keys
 
 bundle: build
 	@mkdir -p $(BUNDLE)/Contents/{MacOS,Resources}
