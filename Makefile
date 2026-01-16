@@ -8,18 +8,11 @@ DMG = $(APP_NAME)-$(VERSION).dmg
 GENERATED_DIR = Sources/Generated
 
 # Last.fm API keys: loaded from .env.local (if exists) or environment variables
-# Create .env.local with: LASTFM_API_KEY=xxx and LASTFM_API_SECRET=xxx (no quotes!)
-ifneq (,$(wildcard .env.local))
-    include .env.local
-    export
-endif
-
-# Strip quotes if present
+# Create .env.local with: LASTFM_API_KEY=xxx and LASTFM_API_SECRET=xxx
+-include .env.local
 LASTFM_API_KEY := $(subst ",,$(LASTFM_API_KEY))
 LASTFM_API_SECRET := $(subst ",,$(LASTFM_API_SECRET))
-
-LASTFM_API_KEY ?=
-LASTFM_API_SECRET ?=
+export LASTFM_API_KEY LASTFM_API_SECRET
 
 all: bundle
 
@@ -29,15 +22,15 @@ generate-secrets:
 	@echo "// Generated at: $$(date)" >> $(GENERATED_DIR)/Secrets.swift
 	@echo "" >> $(GENERATED_DIR)/Secrets.swift
 	@echo "enum Secrets {" >> $(GENERATED_DIR)/Secrets.swift
-	@if [ -n "$(LASTFM_API_KEY)" ]; then \
-		echo "    static let lastfmApiKey = \"$(LASTFM_API_KEY)\"" >> $(GENERATED_DIR)/Secrets.swift; \
-		echo "    static let lastfmApiSecret = \"$(LASTFM_API_SECRET)\"" >> $(GENERATED_DIR)/Secrets.swift; \
+	@if [ -n "$${LASTFM_API_KEY}" ]; then \
+		echo "    static let lastfmApiKey = \"$${LASTFM_API_KEY}\"" >> $(GENERATED_DIR)/Secrets.swift; \
+		echo "    static let lastfmApiSecret = \"$${LASTFM_API_SECRET}\"" >> $(GENERATED_DIR)/Secrets.swift; \
 	else \
 		echo "    static let lastfmApiKey = \"\"" >> $(GENERATED_DIR)/Secrets.swift; \
 		echo "    static let lastfmApiSecret = \"\"" >> $(GENERATED_DIR)/Secrets.swift; \
 	fi
 	@echo "}" >> $(GENERATED_DIR)/Secrets.swift
-	@echo "Generated Secrets.swift"
+	@echo "Generated Secrets.swift (key set: $$([ -n \"$${LASTFM_API_KEY}\" ] && echo yes || echo no))"
 
 build: generate-secrets
 	swift build -c release

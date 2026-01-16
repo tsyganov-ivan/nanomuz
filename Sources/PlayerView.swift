@@ -118,6 +118,8 @@ class PlayerView: NSView {
         lastfmConnectButton = NSButton(title: lastfmConnected ? "Disconnect" : "Connect", target: self, action: #selector(lastfmConnectClicked))
         lastfmConnectButton?.bezelStyle = .rounded
         lastfmConnectButton?.font = NSFont.systemFont(ofSize: 11)
+        lastfmConnectButton?.isBordered = false
+        lastfmConnectButton?.wantsLayer = true
         addSubview(lastfmConnectButton!)
 
         adaptiveColorsCheckbox = NSButton(checkboxWithTitle: "", target: self, action: #selector(adaptiveColorsChanged))
@@ -243,6 +245,8 @@ class PlayerView: NSView {
                 .foregroundColor: colors.textSecondary,
                 .font: NSFont.systemFont(ofSize: 11)
             ])
+            button.layer?.backgroundColor = colors.buttonBackground.cgColor
+            button.layer?.cornerRadius = 5
         }
         lastfmEnabledLabel?.textColor = colors.textSecondary
         lastfmEnabledCheckbox?.contentTintColor = colors.textSecondary
