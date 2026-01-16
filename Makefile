@@ -7,30 +7,26 @@ BUNDLE = $(APP_NAME).app
 DMG = $(APP_NAME)-$(VERSION).dmg
 GENERATED_DIR = Sources/Generated
 
-# Last.fm API keys: loaded from .env.local (if exists) or environment variables
-# Create .env.local with: LASTFM_API_KEY=xxx and LASTFM_API_SECRET=xxx
--include .env.local
-LASTFM_API_KEY := $(subst ",,$(LASTFM_API_KEY))
-LASTFM_API_SECRET := $(subst ",,$(LASTFM_API_SECRET))
-export LASTFM_API_KEY LASTFM_API_SECRET
+# Last.fm API keys: from environment variables
+# For local dev: source .env.local before running make, or set env vars
+# On CI: secrets are passed as environment variables
 
 all: bundle
 
 generate-secrets:
 	@mkdir -p $(GENERATED_DIR)
-	@echo "// Auto-generated file - do not edit" > $(GENERATED_DIR)/Secrets.swift
-	@echo "// Generated at: $$(date)" >> $(GENERATED_DIR)/Secrets.swift
-	@echo "" >> $(GENERATED_DIR)/Secrets.swift
-	@echo "enum Secrets {" >> $(GENERATED_DIR)/Secrets.swift
-	@if [ -n "$${LASTFM_API_KEY}" ]; then \
-		echo "    static let lastfmApiKey = \"$${LASTFM_API_KEY}\"" >> $(GENERATED_DIR)/Secrets.swift; \
-		echo "    static let lastfmApiSecret = \"$${LASTFM_API_SECRET}\"" >> $(GENERATED_DIR)/Secrets.swift; \
-	else \
-		echo "    static let lastfmApiKey = \"\"" >> $(GENERATED_DIR)/Secrets.swift; \
-		echo "    static let lastfmApiSecret = \"\"" >> $(GENERATED_DIR)/Secrets.swift; \
-	fi
-	@echo "}" >> $(GENERATED_DIR)/Secrets.swift
-	@echo "Generated Secrets.swift (key set: $$([ -n \"$${LASTFM_API_KEY}\" ] && echo yes || echo no))"
+	@if [ -f .env.local ]; then set -a; . ./.env.local; set +a; fi; \
+	if [ -z "$${LASTFM_API_KEY}" ] || [ -z "$${LASTFM_API_SECRET}" ]; then \
+		echo "Error: LASTFM_API_KEY and LASTFM_API_SECRET must be set"; \
+		echo "Create .env.local or set environment variables"; \
+		exit 1; \
+	fi; \
+	echo "// Auto-generated file - do not edit" > $(GENERATED_DIR)/Secrets.swift; \
+	echo "enum Secrets {" >> $(GENERATED_DIR)/Secrets.swift; \
+	echo "    static let lastfmApiKey = \"$${LASTFM_API_KEY}\"" >> $(GENERATED_DIR)/Secrets.swift; \
+	echo "    static let lastfmApiSecret = \"$${LASTFM_API_SECRET}\"" >> $(GENERATED_DIR)/Secrets.swift; \
+	echo "}" >> $(GENERATED_DIR)/Secrets.swift; \
+	echo "Generated Secrets.swift"
 
 build: generate-secrets
 	swift build -c release
