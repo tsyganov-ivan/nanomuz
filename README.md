@@ -4,8 +4,6 @@ A tiny floating music widget for macOS that displays and controls Apple Music pl
 
 ![Nanomuz Widget](screenshot_1.png)
 
-![Nanomuz Settings](screenshot_2.png)
-
 ## Features
 
 - Floating widget that stays on top of all windows
