@@ -71,6 +71,63 @@ class Logger {
     }
 }
 
+// MARK: - Color Extraction
+
+extension NSImage {
+    func dominantColor() -> NSColor? {
+        guard let tiffData = tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData) else { return nil }
+
+        // Resize to small size for faster processing
+        let smallSize = 20
+        guard let resized = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: smallSize,
+            pixelsHigh: smallSize,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: smallSize * 4,
+            bitsPerPixel: 32
+        ) else { return nil }
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: resized)
+        bitmap.draw(in: NSRect(x: 0, y: 0, width: smallSize, height: smallSize))
+        NSGraphicsContext.restoreGraphicsState()
+
+        var totalR: CGFloat = 0, totalG: CGFloat = 0, totalB: CGFloat = 0
+        var count: CGFloat = 0
+
+        for y in 0..<smallSize {
+            for x in 0..<smallSize {
+                guard let color = resized.colorAt(x: x, y: y) else { continue }
+                var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+                color.usingColorSpace(.deviceRGB)?.getRed(&r, green: &g, blue: &b, alpha: &a)
+
+                // Skip very dark and very bright pixels
+                let brightness = (r + g + b) / 3
+                if brightness > 0.1 && brightness < 0.9 {
+                    // Weight by saturation for more vibrant colors
+                    let maxC = max(r, g, b), minC = min(r, g, b)
+                    let saturation = maxC > 0 ? (maxC - minC) / maxC : 0
+                    let weight = 1 + saturation
+
+                    totalR += r * weight
+                    totalG += g * weight
+                    totalB += b * weight
+                    count += weight
+                }
+            }
+        }
+
+        guard count > 0 else { return nil }
+        return NSColor(red: totalR / count, green: totalG / count, blue: totalB / count, alpha: 1.0)
+    }
+}
+
 // MARK: - Media Controller
 
 struct NowPlayingInfo {
@@ -353,6 +410,7 @@ struct Config: Codable {
     var lastfmEnabled: Bool
     var lastfmUsername: String
     var lastfmSessionKey: String
+    var adaptiveColors: Bool
 
     static let defaultConfig = Config(
         windowX: 100,
@@ -367,7 +425,8 @@ struct Config: Codable {
         loggingEnabled: false,
         lastfmEnabled: true,
         lastfmUsername: "",
-        lastfmSessionKey: ""
+        lastfmSessionKey: "",
+        adaptiveColors: true
     )
     static let minWidth: CGFloat = 300
     static let maxWidth: CGFloat = 800
@@ -793,6 +852,7 @@ extension NSColor {
 }
 
 struct DynamicColors {
+    let baseColor: NSColor
     let background: NSColor
     let text: NSColor
     let textSecondary: NSColor
@@ -801,6 +861,7 @@ struct DynamicColors {
     let buttonBackgroundHover: NSColor
 
     init(baseColor: NSColor, opacity: CGFloat) {
+        self.baseColor = baseColor
         background = baseColor.withAlphaComponent(opacity)
 
         if baseColor.isLight {
@@ -841,6 +902,7 @@ class PlayerView: NSView {
     var onLastfmEnabledChange: ((Bool) -> Void)?
     var onLastfmConnect: (() -> Void)?
     var onLastfmDisconnect: (() -> Void)?
+    var onAdaptiveColorsChange: ((Bool) -> Void)?
 
     private var trackingArea: NSTrackingArea?
     private var hoveredButton: String?
@@ -856,10 +918,14 @@ class PlayerView: NSView {
     private var showInMenuBarLabel: NSTextField?
     private var alwaysOnTopCheckbox: NSButton?
     private var alwaysOnTopLabel: NSTextField?
+    private var lastfmHeaderLabel: NSTextField?
     private var lastfmEnabledCheckbox: NSButton?
     private var lastfmEnabledLabel: NSTextField?
     private var lastfmConnectButton: NSButton?
-    private var lastfmStatusLabel: NSTextField?
+    private var adaptiveColorsCheckbox: NSButton?
+    private var adaptiveColorsLabel: NSTextField?
+    private var separator1: NSBox?
+    private var separator2: NSBox?
 
     // Marquee animation
     private var scrollOffset: CGFloat = 0
@@ -868,14 +934,14 @@ class PlayerView: NSView {
     private let scrollSpeed: CGFloat = 0.5
     private let pauseFrames: Int = 60  // 2 seconds at 30 FPS
 
-    static let settingsPanelHeight: CGFloat = 96
+    static let settingsPanelHeight: CGFloat = 160
 
     var lastfmUsername: String = ""
     var lastfmConnected: Bool = false
 
     override var isFlipped: Bool { true }
 
-    func setupSettingsControls(opacity: CGFloat, color: NSColor, launchOnLogin: Bool, showInDock: Bool, showInMenuBar: Bool, alwaysOnTop: Bool, lastfmEnabled: Bool = true, lastfmConnected: Bool = false, lastfmUsername: String = "") {
+    func setupSettingsControls(opacity: CGFloat, color: NSColor, launchOnLogin: Bool, showInDock: Bool, showInMenuBar: Bool, alwaysOnTop: Bool, lastfmEnabled: Bool = true, lastfmConnected: Bool = false, lastfmUsername: String = "", adaptiveColors: Bool = true) {
         self.lastfmUsername = lastfmUsername
         self.lastfmConnected = lastfmConnected
         opacitySlider = NSSlider(value: Double(opacity), minValue: 0.3, maxValue: 1.0, target: self, action: #selector(opacityChanged))
@@ -896,7 +962,7 @@ class PlayerView: NSView {
         launchOnLoginCheckbox = NSButton(checkboxWithTitle: "", target: self, action: #selector(launchOnLoginChanged))
         launchOnLoginCheckbox?.state = launchOnLogin ? .on : .off
         addSubview(launchOnLoginCheckbox!)
-        launchOnLoginLabel = NSTextField(labelWithString: "Launch on Login")
+        launchOnLoginLabel = NSTextField(labelWithString: "Launch at login")
         launchOnLoginLabel?.font = NSFont.systemFont(ofSize: 11)
         addSubview(launchOnLoginLabel!)
 
@@ -917,7 +983,7 @@ class PlayerView: NSView {
         alwaysOnTopCheckbox = NSButton(checkboxWithTitle: "", target: self, action: #selector(alwaysOnTopChanged))
         alwaysOnTopCheckbox?.state = alwaysOnTop ? .on : .off
         addSubview(alwaysOnTopCheckbox!)
-        alwaysOnTopLabel = NSTextField(labelWithString: "Always on Top")
+        alwaysOnTopLabel = NSTextField(labelWithString: "Always on top")
         alwaysOnTopLabel?.font = NSFont.systemFont(ofSize: 11)
         addSubview(alwaysOnTopLabel!)
 
@@ -928,14 +994,34 @@ class PlayerView: NSView {
         lastfmEnabledLabel?.font = NSFont.systemFont(ofSize: 11)
         addSubview(lastfmEnabledLabel!)
 
-        lastfmConnectButton = NSButton(title: lastfmConnected ? "Disconnect" : "Connect Last.fm", target: self, action: #selector(lastfmConnectClicked))
+        lastfmHeaderLabel = NSTextField(labelWithString: lastfmConnected ? "Last.FM as \(lastfmUsername)" : "Last.FM")
+        lastfmHeaderLabel?.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        addSubview(lastfmHeaderLabel!)
+
+        lastfmConnectButton = NSButton(title: lastfmConnected ? "Disconnect" : "Connect", target: self, action: #selector(lastfmConnectClicked))
         lastfmConnectButton?.bezelStyle = .rounded
-        lastfmConnectButton?.font = NSFont.systemFont(ofSize: 10)
+        lastfmConnectButton?.font = NSFont.systemFont(ofSize: 11)
         addSubview(lastfmConnectButton!)
 
-        lastfmStatusLabel = NSTextField(labelWithString: lastfmConnected ? "as \(lastfmUsername)" : "")
-        lastfmStatusLabel?.font = NSFont.systemFont(ofSize: 10)
-        addSubview(lastfmStatusLabel!)
+        adaptiveColorsCheckbox = NSButton(checkboxWithTitle: "", target: self, action: #selector(adaptiveColorsChanged))
+        adaptiveColorsCheckbox?.state = adaptiveColors ? .on : .off
+        addSubview(adaptiveColorsCheckbox!)
+        adaptiveColorsLabel = NSTextField(labelWithString: "Adaptive")
+        adaptiveColorsLabel?.font = NSFont.systemFont(ofSize: 11)
+        addSubview(adaptiveColorsLabel!)
+
+        // Disable color picker when adaptive mode is on
+        colorWell?.isEnabled = !adaptiveColors
+
+        // Separators
+        separator1 = NSBox()
+        separator1?.boxType = .custom
+        separator1?.borderWidth = 0
+        addSubview(separator1!)
+        separator2 = NSBox()
+        separator2?.boxType = .custom
+        separator2?.borderWidth = 0
+        addSubview(separator2!)
 
         updateSettingsColors()
         updateSettingsControlsVisibility()
@@ -944,8 +1030,12 @@ class PlayerView: NSView {
     func updateLastfmStatus(connected: Bool, username: String) {
         self.lastfmConnected = connected
         self.lastfmUsername = username
-        lastfmConnectButton?.title = connected ? "Disconnect" : "Connect Last.fm"
-        lastfmStatusLabel?.stringValue = connected ? "as \(username)" : ""
+        lastfmHeaderLabel?.stringValue = connected ? "Last.FM as \(username)" : "Last.FM"
+        let title = connected ? "Disconnect" : "Connect"
+        lastfmConnectButton?.attributedTitle = NSAttributedString(string: title, attributes: [
+            .foregroundColor: colors.textSecondary,
+            .font: NSFont.systemFont(ofSize: 11)
+        ])
         setNeedsDisplay(bounds)
     }
 
@@ -968,48 +1058,86 @@ class PlayerView: NSView {
         alwaysOnTopLabel?.isHidden = hidden
         lastfmEnabledCheckbox?.isHidden = hidden
         lastfmEnabledLabel?.isHidden = hidden
+        lastfmHeaderLabel?.isHidden = hidden
         lastfmConnectButton?.isHidden = hidden
-        lastfmStatusLabel?.isHidden = hidden
+        adaptiveColorsCheckbox?.isHidden = hidden
+        adaptiveColorsLabel?.isHidden = hidden
+        separator1?.isHidden = hidden
+        separator2?.isHidden = hidden
     }
 
     func updateSettingsControlsLayout() {
         guard isSettingsExpanded else { return }
-        let row1Y = bounds.height - PlayerView.settingsPanelHeight + 8
-        let row2Y = row1Y + 26
-        let row3Y = row2Y + 26
+        let padding: CGFloat = 12
+        let checkboxSize: CGFloat = 16
+        let gap: CGFloat = 4
+        let labelHeight: CGFloat = 16
 
-        opacityLabel?.frame = NSRect(x: 12, y: row1Y, width: 50, height: 20)
-        opacitySlider?.frame = NSRect(x: 62, y: row1Y, width: 100, height: 20)
-        colorWell?.frame = NSRect(x: 170, y: row1Y - 2, width: 44, height: 24)
-        launchOnLoginCheckbox?.frame = NSRect(x: 224, y: row1Y, width: 18, height: 20)
-        launchOnLoginLabel?.frame = NSRect(x: 242, y: row1Y, width: 100, height: 20)
+        let baseY = bounds.height - PlayerView.settingsPanelHeight
+        let row1Y = baseY + 16
+        let sep1Y = baseY + 38
+        let row2Y = baseY + 50
+        let row2bY = baseY + 70
+        let sep2Y = baseY + 92
+        let row3Y = baseY + 104
+        let row3bY = baseY + 128
 
-        showInDockCheckbox?.frame = NSRect(x: 12, y: row2Y, width: 18, height: 20)
-        showInDockLabel?.frame = NSRect(x: 30, y: row2Y, width: 40, height: 20)
-        showInMenuBarCheckbox?.frame = NSRect(x: 75, y: row2Y, width: 18, height: 20)
-        showInMenuBarLabel?.frame = NSRect(x: 93, y: row2Y, width: 65, height: 20)
-        alwaysOnTopCheckbox?.frame = NSRect(x: 163, y: row2Y, width: 18, height: 20)
-        alwaysOnTopLabel?.frame = NSRect(x: 181, y: row2Y, width: 90, height: 20)
+        // Row 1: Appearance (Opacity, Color, Adaptive)
+        opacityLabel?.frame = NSRect(x: padding, y: row1Y, width: 52, height: labelHeight)
+        opacitySlider?.frame = NSRect(x: 64, y: row1Y, width: 100, height: labelHeight)
+        colorWell?.frame = NSRect(x: 172, y: row1Y - 4, width: 44, height: 24)
+        let adaptiveX: CGFloat = 224
+        adaptiveColorsCheckbox?.frame = NSRect(x: adaptiveX, y: row1Y, width: checkboxSize, height: checkboxSize)
+        adaptiveColorsLabel?.frame = NSRect(x: adaptiveX + checkboxSize + gap, y: row1Y, width: 70, height: labelHeight)
 
-        lastfmEnabledCheckbox?.frame = NSRect(x: 12, y: row3Y, width: 18, height: 20)
-        lastfmEnabledLabel?.frame = NSRect(x: 30, y: row3Y, width: 55, height: 20)
-        lastfmConnectButton?.frame = NSRect(x: 90, y: row3Y - 2, width: 110, height: 22)
-        lastfmStatusLabel?.frame = NSRect(x: 205, y: row3Y, width: 150, height: 20)
+        separator1?.frame = NSRect(x: padding, y: sep1Y, width: bounds.width - padding * 2, height: 1)
+
+        // Row 2: Window behavior (Always on top, Dock, Menu Bar, Launch at login)
+        let col1: CGFloat = padding
+        let col2: CGFloat = 200
+
+        alwaysOnTopCheckbox?.frame = NSRect(x: col1, y: row2Y, width: checkboxSize, height: checkboxSize)
+        alwaysOnTopLabel?.frame = NSRect(x: col1 + checkboxSize + gap, y: row2Y, width: 80, height: labelHeight)
+        showInDockCheckbox?.frame = NSRect(x: col2, y: row2Y, width: checkboxSize, height: checkboxSize)
+        showInDockLabel?.frame = NSRect(x: col2 + checkboxSize + gap, y: row2Y, width: 35, height: labelHeight)
+        showInMenuBarCheckbox?.frame = NSRect(x: col1, y: row2bY, width: checkboxSize, height: checkboxSize)
+        showInMenuBarLabel?.frame = NSRect(x: col1 + checkboxSize + gap, y: row2bY, width: 60, height: labelHeight)
+        launchOnLoginCheckbox?.frame = NSRect(x: col2, y: row2bY, width: checkboxSize, height: checkboxSize)
+        launchOnLoginLabel?.frame = NSRect(x: col2 + checkboxSize + gap, y: row2bY, width: 90, height: labelHeight)
+
+        separator2?.frame = NSRect(x: padding, y: sep2Y, width: bounds.width - padding * 2, height: 1)
+
+        // Row 3: Last.fm (Header, Connect button, Scrobble checkbox)
+        lastfmHeaderLabel?.frame = NSRect(x: padding, y: row3Y, width: bounds.width - padding * 2, height: labelHeight)
+        lastfmConnectButton?.frame = NSRect(x: padding, y: row3bY - 2, width: 80, height: 22)
+        lastfmEnabledCheckbox?.frame = NSRect(x: col2, y: row3bY, width: checkboxSize, height: checkboxSize)
+        lastfmEnabledLabel?.frame = NSRect(x: col2 + checkboxSize + gap, y: row3bY, width: 60, height: labelHeight)
     }
 
     func updateSettingsColors() {
         opacityLabel?.textColor = colors.textSecondary
-        launchOnLoginLabel?.textColor = colors.text
-        showInDockLabel?.textColor = colors.text
-        showInMenuBarLabel?.textColor = colors.text
-        alwaysOnTopLabel?.textColor = colors.text
-        launchOnLoginCheckbox?.contentTintColor = colors.text
-        showInDockCheckbox?.contentTintColor = colors.text
-        showInMenuBarCheckbox?.contentTintColor = colors.text
-        alwaysOnTopCheckbox?.contentTintColor = colors.text
-        lastfmEnabledLabel?.textColor = colors.text
-        lastfmEnabledCheckbox?.contentTintColor = colors.text
-        lastfmStatusLabel?.textColor = colors.textSecondary
+        launchOnLoginLabel?.textColor = colors.textSecondary
+        showInDockLabel?.textColor = colors.textSecondary
+        showInMenuBarLabel?.textColor = colors.textSecondary
+        alwaysOnTopLabel?.textColor = colors.textSecondary
+        launchOnLoginCheckbox?.contentTintColor = colors.textSecondary
+        showInDockCheckbox?.contentTintColor = colors.textSecondary
+        showInMenuBarCheckbox?.contentTintColor = colors.textSecondary
+        alwaysOnTopCheckbox?.contentTintColor = colors.textSecondary
+        lastfmHeaderLabel?.textColor = colors.textSecondary
+        if let button = lastfmConnectButton {
+            let title = button.title
+            button.attributedTitle = NSAttributedString(string: title, attributes: [
+                .foregroundColor: colors.textSecondary,
+                .font: NSFont.systemFont(ofSize: 11)
+            ])
+        }
+        lastfmEnabledLabel?.textColor = colors.textSecondary
+        lastfmEnabledCheckbox?.contentTintColor = colors.textSecondary
+        adaptiveColorsLabel?.textColor = colors.textSecondary
+        adaptiveColorsCheckbox?.contentTintColor = colors.text
+        separator1?.fillColor = colors.buttonBackground
+        separator2?.fillColor = colors.buttonBackground
     }
 
     @objc private func opacityChanged() {
@@ -1044,6 +1172,12 @@ class PlayerView: NSView {
 
     @objc private func lastfmConnectClicked() {
         if lastfmConnected { onLastfmDisconnect?() } else { onLastfmConnect?() }
+    }
+
+    @objc private func adaptiveColorsChanged() {
+        let enabled = adaptiveColorsCheckbox?.state == .on
+        colorWell?.isEnabled = !enabled
+        onAdaptiveColorsChange?(enabled)
     }
 
     override func updateTrackingAreas() {
@@ -1291,17 +1425,10 @@ class PlayerView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        let playerHeight: CGFloat = 50
 
-        // Let interactive controls handle their own clicks
-        if let hitView = hitTest(point),
-           (hitView is NSButton || hitView is NSSlider || hitView is NSColorWell) {
-            Logger.shared.logAlways("Click intercepted by: \(type(of: hitView))")
-            super.mouseDown(with: event)
-            return
-        }
-
-        if let button = buttonAt(point: point) {
-            Logger.shared.logAlways("Button clicked: \(button)")
+        // First check custom drawn buttons in player area
+        if point.y < playerHeight, let button = buttonAt(point: point) {
             switch button {
             case "prev": onPrevious?()
             case "play": onPlayPause?()
@@ -1311,9 +1438,17 @@ class PlayerView: NSView {
             case "quit": onQuit?()
             default: break
             }
-        } else {
-            window?.performDrag(with: event)
+            return
         }
+
+        // Let interactive controls handle their own clicks
+        if let hitView = hitTest(point),
+           (hitView is NSButton || hitView is NSSlider || hitView is NSColorWell) {
+            super.mouseDown(with: event)
+            return
+        }
+
+        window?.performDrag(with: event)
     }
 }
 
@@ -1396,6 +1531,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         playerView.onLastfmEnabledChange = { [weak self] enabled in self?.updateLastfmEnabled(enabled) }
         playerView.onLastfmConnect = { [weak self] in self?.connectLastfm() }
         playerView.onLastfmDisconnect = { [weak self] in self?.disconnectLastfm() }
+        playerView.onAdaptiveColorsChange = { [weak self] enabled in self?.updateAdaptiveColors(enabled) }
 
         let lastfmConnected = LastFMAuthService.shared.isAuthenticated
         playerView.setupSettingsControls(
@@ -1407,7 +1543,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             alwaysOnTop: config.alwaysOnTop,
             lastfmEnabled: config.lastfmEnabled,
             lastfmConnected: lastfmConnected,
-            lastfmUsername: config.lastfmUsername
+            lastfmUsername: config.lastfmUsername,
+            adaptiveColors: config.adaptiveColors
         )
         LastFMScrobbleService.shared.enabled = config.lastfmEnabled
 
@@ -1615,6 +1752,32 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         Logger.shared.logAlways("Last.fm: Scrobbling \(enabled ? "enabled" : "disabled")")
     }
 
+    func updateAdaptiveColors(_ enabled: Bool) {
+        config.adaptiveColors = enabled
+        config.save()
+        if enabled, let image = playerView.artworkImage {
+            applyAdaptiveColor(from: image)
+        } else if !enabled {
+            // Restore saved color
+            playerView.colors = DynamicColors(
+                baseColor: NSColor(hex: config.backgroundColor),
+                opacity: config.backgroundOpacity
+            )
+            playerView.updateSettingsColors()
+            playerView.needsDisplay = true
+        }
+    }
+
+    func applyAdaptiveColor(from image: NSImage) {
+        guard config.adaptiveColors, let dominantColor = image.dominantColor() else { return }
+        playerView.colors = DynamicColors(
+            baseColor: dominantColor,
+            opacity: config.backgroundOpacity
+        )
+        playerView.updateSettingsColors()
+        playerView.needsDisplay = true
+    }
+
     func connectLastfm() {
         Logger.shared.logAlways("Last.fm: Starting authentication...")
         LastFMAuthService.shared.startAuthentication { [weak self] success, username in
@@ -1697,8 +1860,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func updateOpacity(_ opacity: CGFloat) {
         config.backgroundOpacity = opacity
         config.save()
+        // Keep current base color (adaptive or manual)
         playerView.colors = DynamicColors(
-            baseColor: NSColor(hex: config.backgroundColor),
+            baseColor: playerView.colors.baseColor,
             opacity: opacity
         )
         playerView.updateSettingsColors()
@@ -1779,6 +1943,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                                 if let data = MediaController.shared.cachedArtwork,
                                    let image = NSImage(data: data) {
                                     self?.playerView.artworkImage = image
+                                    self?.applyAdaptiveColor(from: image)
                                     self?.playerView.setNeedsDisplay(self?.playerView.bounds ?? .zero)
                                 }
                             }
@@ -1789,6 +1954,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 if let data = MediaController.shared.cachedArtwork, self.playerView.artworkImage == nil {
                     if let image = NSImage(data: data) {
                         self.playerView.artworkImage = image
+                        self.applyAdaptiveColor(from: image)
                     }
                 }
 
