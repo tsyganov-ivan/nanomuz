@@ -205,15 +205,15 @@ class MediaController {
     }
 
     func toggleFavorite(completion: (() -> Void)? = nil) {
-        isFavoritedAsync { [weak self] current in
-            self?.runAppleScriptAsync("tell application \"Music\" to set favorited of current track to \(current ? "false" : "true")") { _ in
-                if var info = self?.cachedInfo {
-                    info.isFavorited = !current
-                    self?.cachedInfo = info
-                }
-                completion?()
-            }
+        guard var info = cachedInfo else {
+            completion?()
+            return
         }
+        let newState = !info.isFavorited
+        info.isFavorited = newState
+        cachedInfo = info
+        completion?()
+        runAppleScriptAsync("tell application \"Music\" to set favorited of current track to \(newState)") { _ in }
     }
 
     private func runJXAAsync(_ script: String, completion: @escaping (String?) -> Void) {
