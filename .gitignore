@@ -32,3 +32,6 @@ Package.resolved
 
 # Generated files
 /Sources/Generated/
+
+# ralphex progress logs
+progress*.txt

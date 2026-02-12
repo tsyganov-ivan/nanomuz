@@ -13,10 +13,53 @@ struct NowPlayingInfo {
 class MediaController {
     static let shared = MediaController()
 
-    var cachedArtwork: Data?
-    var cachedInfo: NowPlayingInfo?
+    private var _cachedArtwork: Data?
+    private let artworkLock = NSLock()
+    var cachedArtwork: Data? {
+        get {
+            artworkLock.lock()
+            defer { artworkLock.unlock() }
+            return _cachedArtwork
+        }
+        set {
+            artworkLock.lock()
+            defer { artworkLock.unlock() }
+            _cachedArtwork = newValue
+        }
+    }
+
+    private var _cachedInfo: NowPlayingInfo?
+    private let infoLock = NSLock()
+    var cachedInfo: NowPlayingInfo? {
+        get {
+            infoLock.lock()
+            defer { infoLock.unlock() }
+            return _cachedInfo
+        }
+        set {
+            infoLock.lock()
+            defer { infoLock.unlock() }
+            _cachedInfo = newValue
+        }
+    }
 
     private let scriptQueue = DispatchQueue(label: "com.nanomuz.scripts", qos: .userInitiated)
+    private let artworkQueue = DispatchQueue(label: "com.nanomuz.artwork", qos: .userInitiated)
+
+    private var _currentArtworkRequestId: UUID?
+    private let requestIdLock = NSLock()
+    private var currentArtworkRequestId: UUID? {
+        get {
+            requestIdLock.lock()
+            defer { requestIdLock.unlock() }
+            return _currentArtworkRequestId
+        }
+        set {
+            requestIdLock.lock()
+            defer { requestIdLock.unlock() }
+            _currentArtworkRequestId = newValue
+        }
+    }
 
     private init() {}
 
@@ -102,81 +145,159 @@ class MediaController {
         }
     }
 
-    func fetchArtwork() {
+    func fetchArtwork(completion: @escaping () -> Void) {
+        let requestId = UUID()
+        currentArtworkRequestId = requestId
+
         guard let info = cachedInfo else {
             Logger.shared.log("fetchArtwork: No track info", key: "no_track_info")
             cachedArtwork = nil
+            completion()
             return
         }
 
         if let urlString = info.artworkUrl, let url = URL(string: urlString) {
-            do {
-                let data = try Data(contentsOf: url)
-                cachedArtwork = data
-                Logger.shared.log("fetchArtwork: Loaded \(data.count) bytes from URL for '\(info.title)'", key: "artwork_url_\(info.title)")
-                return
-            } catch {
-                Logger.shared.log("fetchArtwork: URL failed for '\(info.title)': \(error.localizedDescription)", key: "artwork_url_fail_\(info.title)")
-            }
-        }
+            fetchArtworkFromURL(url: url, requestId: requestId, title: info.title) { [weak self] data in
+                guard let self = self else {
+                    completion()
+                    return
+                }
 
-        Logger.shared.log("fetchArtwork: Trying AppleScript fallback for '\(info.title)'", key: "artwork_as_try_\(info.title)")
-        fetchArtworkFromMusicApp()
+                if self.currentArtworkRequestId != requestId {
+                    Logger.shared.log("fetchArtwork: Stale request ignored", key: "artwork_stale")
+                    completion()
+                    return
+                }
+
+                if let data = data {
+                    self.cachedArtwork = data
+                    Logger.shared.log("fetchArtwork: Loaded \(data.count) bytes from URL for '\(info.title)'", key: "artwork_url_\(info.title)")
+                    completion()
+                } else {
+                    Logger.shared.log("fetchArtwork: Trying AppleScript fallback for '\(info.title)'", key: "artwork_as_try_\(info.title)")
+                    self.fetchArtworkFromMusicApp(requestId: requestId, completion: completion)
+                }
+            }
+        } else {
+            Logger.shared.log("fetchArtwork: Trying AppleScript fallback for '\(info.title)'", key: "artwork_as_try_\(info.title)")
+            fetchArtworkFromMusicApp(requestId: requestId, completion: completion)
+        }
     }
 
-    private func fetchArtworkFromMusicApp() {
-        let tempPath = "/tmp/nanomuz_artwork.tmp"
-        let script = """
-        tell application "Music"
-            try
-                set currentTrack to current track
-                set artworkCount to count of artworks of currentTrack
-                if artworkCount > 0 then
-                    set artworkData to raw data of artwork 1 of currentTrack
-                    set tempPath to "\(tempPath)"
-                    set fileRef to open for access POSIX file tempPath with write permission
-                    set eof of fileRef to 0
-                    write artworkData to fileRef
-                    close access fileRef
-                    return tempPath
-                end if
-            on error errMsg
-                return "error:" & errMsg
-            end try
-        end tell
-        return ""
-        """
+    private func fetchArtworkFromURL(url: URL, requestId: UUID, title: String, completion: @escaping (Data?) -> Void) {
+        artworkQueue.async {
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 30
 
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        task.arguments = ["-e", script]
+            URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+                guard let self = self else {
+                    completion(nil)
+                    return
+                }
 
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
+                if self.currentArtworkRequestId != requestId {
+                    Logger.shared.log("fetchArtworkFromURL: Stale request ignored", key: "artwork_url_stale")
+                    completion(nil)
+                    return
+                }
 
-        do {
-            try task.run()
-            task.waitUntilExit()
-            let output = pipe.fileHandleForReading.readDataToEndOfFile()
-            let result = String(data: output, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if let error = error {
+                    Logger.shared.log("fetchArtworkFromURL: Failed for '\(title)': \(error.localizedDescription)", key: "artwork_url_fail_\(title)")
+                    completion(nil)
+                    return
+                }
 
-            if result == tempPath {
-                let fileURL = URL(fileURLWithPath: tempPath)
-                let imageData = try Data(contentsOf: fileURL)
-                cachedArtwork = imageData
-                try? FileManager.default.removeItem(at: fileURL)
-                Logger.shared.log("fetchArtwork: Loaded \(imageData.count) bytes from Music app", key: "artwork_as_success")
-            } else if result.hasPrefix("error:") {
-                Logger.shared.log("fetchArtwork: AppleScript error: \(result)", key: "artwork_as_error")
-                cachedArtwork = nil
-            } else {
-                Logger.shared.log("fetchArtwork: No artwork in Music app (result: \(result))", key: "artwork_as_none")
-                cachedArtwork = nil
+                if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
+                    Logger.shared.log("fetchArtworkFromURL: HTTP \(httpResponse.statusCode) for '\(title)'", key: "artwork_url_http_\(title)")
+                    completion(nil)
+                    return
+                }
+
+                completion(data)
+            }.resume()
+        }
+    }
+
+    private func fetchArtworkFromMusicApp(requestId: UUID, completion: @escaping () -> Void) {
+        scriptQueue.async { [weak self] in
+            guard let self = self else {
+                completion()
+                return
             }
-        } catch {
-            Logger.shared.logAlways("fetchArtwork: AppleScript execution failed: \(error.localizedDescription)")
-            cachedArtwork = nil
+
+            if self.currentArtworkRequestId != requestId {
+                Logger.shared.log("fetchArtworkFromMusicApp: Stale request ignored", key: "artwork_as_stale")
+                completion()
+                return
+            }
+
+            let tempPath = FileManager.default.temporaryDirectory
+                .appendingPathComponent("nanomuz_artwork_\(UUID().uuidString).tmp")
+                .path
+            let script = """
+            tell application "Music"
+                try
+                    set currentTrack to current track
+                    set artworkCount to count of artworks of currentTrack
+                    if artworkCount > 0 then
+                        set artworkData to raw data of artwork 1 of currentTrack
+                        set tempPath to "\(tempPath)"
+                        set fileRef to open for access POSIX file tempPath with write permission
+                        set eof of fileRef to 0
+                        write artworkData to fileRef
+                        close access fileRef
+                        return tempPath
+                    end if
+                on error errMsg
+                    return "error:" & errMsg
+                end try
+            end tell
+            return ""
+            """
+
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            task.arguments = ["-e", script]
+
+            let pipe = Pipe()
+            task.standardOutput = pipe
+            task.standardError = FileHandle.nullDevice
+
+            do {
+                try task.run()
+                task.waitUntilExit()
+
+                if self.currentArtworkRequestId != requestId {
+                    Logger.shared.log("fetchArtworkFromMusicApp: Stale request after AppleScript", key: "artwork_as_stale_post")
+                    completion()
+                    return
+                }
+
+                let output = pipe.fileHandleForReading.readDataToEndOfFile()
+                let result = String(data: output, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+                if result == tempPath {
+                    let fileURL = URL(fileURLWithPath: tempPath)
+                    let imageData = try Data(contentsOf: fileURL)
+                    self.cachedArtwork = imageData
+                    try? FileManager.default.removeItem(at: fileURL)
+                    Logger.shared.log("fetchArtwork: Loaded \(imageData.count) bytes from Music app", key: "artwork_as_success")
+                } else if result.hasPrefix("error:") {
+                    Logger.shared.log("fetchArtwork: AppleScript error: \(result)", key: "artwork_as_error")
+                    self.cachedArtwork = nil
+                    try? FileManager.default.removeItem(atPath: tempPath)
+                } else {
+                    Logger.shared.log("fetchArtwork: No artwork in Music app (result: \(result))", key: "artwork_as_none")
+                    self.cachedArtwork = nil
+                    try? FileManager.default.removeItem(atPath: tempPath)
+                }
+            } catch {
+                Logger.shared.logAlways("fetchArtwork: AppleScript execution failed: \(error.localizedDescription)")
+                self.cachedArtwork = nil
+                try? FileManager.default.removeItem(atPath: tempPath)
+            }
+
+            completion()
         }
     }
 
