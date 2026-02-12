@@ -258,8 +258,11 @@ class LastFMScrobbleService {
     private func resumePlayback() {
         guard var session = currentSession, session.lastResumedAt == nil else { return }
         session.lastResumedAt = Date()
+        let shouldSendNowPlaying = !session.nowPlayingSent
         currentSession = session
-        if lastNowPlayingAt == nil || Date().timeIntervalSince(lastNowPlayingAt!) >= 15 { sendNowPlaying() }
+        if shouldSendNowPlaying || lastNowPlayingAt == nil || Date().timeIntervalSince(lastNowPlayingAt!) >= 15 {
+            sendNowPlaying()
+        }
     }
 
     private func pausePlayback() {
@@ -283,7 +286,9 @@ class LastFMScrobbleService {
     }
 
     private func sendNowPlaying() {
-        guard let session = currentSession, let sessionKey = LastFMAuthService.shared.sessionKey else { return }
+        guard var session = currentSession, let sessionKey = LastFMAuthService.shared.sessionKey else { return }
+        session.nowPlayingSent = true
+        currentSession = session
         lastNowPlayingAt = Date()
         LastFMClient.shared.updateNowPlaying(artist: session.artist, track: session.track, album: session.album.isEmpty ? nil : session.album, duration: session.durationSeconds, sessionKey: sessionKey) { success in
             Logger.shared.logAlways("Last.fm: Now playing \(success ? "sent" : "FAILED") - \(session.artist) - \(session.track)")
